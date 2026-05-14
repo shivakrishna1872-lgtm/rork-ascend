@@ -141,6 +141,103 @@ final class PhysiqueScanRecord {
     var archetype: Archetype { Archetype(rawValue: archetypeRaw) ?? .balanced }
 }
 
+// MARK: - Rolling-average smoothing (stability over time)
+
+/// Applies exponential-style smoothing to physique metrics based on the user's
+/// recent history so similar uploads don't produce wildly different scores.
+///
+/// Strategy: blend new = newWeight * raw + (1 - newWeight) * recentAverage.
+/// `newWeight` decreases with the number of prior scans (more history -> more stability).
+enum PhysiqueSmoothing {
+    static func smooth(raw: PhysiqueAnalysis, blendedSymmetry: Double, blendedVTaper: Double,
+                       priors: [PhysiqueScanRecord]) -> PhysiqueAnalysis {
+        let n = priors.count
+        guard n > 0 else {
+            return PhysiqueAnalysis(
+                physiqueScore: raw.physiqueScore,
+                symmetry: blendedSymmetry,
+                muscularity: raw.muscularity,
+                conditioning: raw.conditioning,
+                vTaper: blendedVTaper,
+                bodyFatPercent: raw.bodyFatPercent,
+                bodyFatConfidence: raw.bodyFatConfidence,
+                archetype: raw.archetype,
+                insight: raw.insight,
+                recommendations: raw.recommendations
+            )
+        }
+        // 1 scan -> 0.60, 2 -> 0.50, 3 -> 0.42, 4+ -> 0.36
+        let newWeight = max(0.36, 0.7 - Double(n) * 0.08)
+        let recent = Array(priors.prefix(5))
+        func avg(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / Double(recent.count)
+        }
+        return PhysiqueAnalysis(
+            physiqueScore: blend(raw.physiqueScore, avg(\.physiqueScore), w: newWeight),
+            symmetry: blend(blendedSymmetry, avg(\.symmetryScore), w: newWeight),
+            muscularity: blend(raw.muscularity, avg(\.muscularityScore), w: newWeight),
+            conditioning: blend(raw.conditioning, avg(\.conditioningScore), w: newWeight),
+            vTaper: blend(blendedVTaper, avg(\.vTaperScore), w: newWeight),
+            bodyFatPercent: blend(raw.bodyFatPercent, avg(\.bodyFatPercent), w: newWeight),
+            bodyFatConfidence: raw.bodyFatConfidence,
+            archetype: raw.archetype,
+            insight: raw.insight,
+            recommendations: raw.recommendations
+        )
+    }
+
+    static func history(from records: [PhysiqueScanRecord]) -> ScoreHistory {
+        let recent = Array(records.prefix(5))
+        guard !recent.isEmpty else { return .none }
+        func avg(_ key: (PhysiqueScanRecord) -> Double) -> Int {
+            Int((recent.map(key).reduce(0, +) / Double(recent.count)).rounded())
+        }
+        let s = "physique \(avg(\.physiqueScore)), symmetry \(avg(\.symmetryScore)), muscularity \(avg(\.muscularityScore)), conditioning \(avg(\.conditioningScore)), v-taper \(avg(\.vTaperScore)), bf \(avg(\.bodyFatPercent))%"
+        return ScoreHistory(summary: s, isEmpty: false)
+    }
+
+    private static func blend(_ a: Double, _ b: Double, w: Double) -> Double {
+        max(0, min(100, a * w + b * (1 - w)))
+    }
+}
+
+enum FaceSmoothing {
+    static func smooth(raw: FaceAnalysis, priors: [FaceScanRecord]) -> FaceAnalysis {
+        let n = priors.count
+        guard n > 0 else { return raw }
+        let newWeight = max(0.36, 0.7 - Double(n) * 0.08)
+        let recent = Array(priors.prefix(5))
+        func avg(_ key: (FaceScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / Double(recent.count)
+        }
+        func blend(_ a: Double, _ b: Double) -> Double {
+            max(0, min(100, a * newWeight + b * (1 - newWeight)))
+        }
+        return FaceAnalysis(
+            overall: blend(raw.overall, avg(\.overallScore)),
+            symmetry: blend(raw.symmetry, avg(\.symmetry)),
+            jawline: blend(raw.jawline, avg(\.jawline)),
+            thirds: blend(raw.thirds, avg(\.thirds)),
+            canthalTilt: blend(raw.canthalTilt, avg(\.canthalTilt)),
+            eyeSpacing: blend(raw.eyeSpacing, avg(\.eyeSpacing)),
+            glowUpPotential: blend(raw.glowUpPotential, avg(\.glowUpPotential)),
+            insight: raw.insight,
+            recommendations: raw.recommendations,
+            hairstyles: raw.hairstyles
+        )
+    }
+
+    static func history(from records: [FaceScanRecord]) -> ScoreHistory {
+        let recent = Array(records.prefix(5))
+        guard !recent.isEmpty else { return .none }
+        func avg(_ key: (FaceScanRecord) -> Double) -> Int {
+            Int((recent.map(key).reduce(0, +) / Double(recent.count)).rounded())
+        }
+        let s = "overall \(avg(\.overallScore)), symmetry \(avg(\.symmetry)), jawline \(avg(\.jawline)), thirds \(avg(\.thirds)), canthal \(avg(\.canthalTilt)), eye-spacing \(avg(\.eyeSpacing))"
+        return ScoreHistory(summary: s, isEmpty: false)
+    }
+}
+
 @Model
 final class FaceScanRecord {
     var date: Date

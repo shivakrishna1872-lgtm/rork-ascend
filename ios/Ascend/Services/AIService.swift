@@ -89,11 +89,17 @@ nonisolated struct AIService {
 
     // MARK: - Public APIs
 
-    func analyzePhysique(front: UIImage, side: UIImage, back: UIImage, profile: ProfileSnapshot) async throws -> PhysiqueAnalysis {
+    func analyzePhysique(front: UIImage, side: UIImage, back: UIImage, profile: ProfileSnapshot, history: ScoreHistory? = nil) async throws -> PhysiqueAnalysis {
+        let anchorLine: String = {
+            guard let h = history, !h.isEmpty else { return "(no prior scans — first analysis)" }
+            return "Prior rolling-average scores to anchor against (only deviate when clearly justified by the photos): " + h.summary
+        }()
         let prompt = """
-        You are Ascend, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(Int(profile.heightCm))cm, \(Int(profile.weightKg))kg.
+        You are Ascend Life, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(Int(profile.heightCm))cm, \(Int(profile.weightKg))kg.
 
-        IMPORTANT: Be deterministic. Use ONLY visible evidence. Identical inputs MUST produce identical outputs. Do not guess randomly — if uncertain, anchor estimates to the demographic baseline and lower the confidence.
+        \(anchorLine)
+
+        IMPORTANT: Be deterministic and stable. Use ONLY visible evidence. Identical inputs MUST produce identical outputs. If the new photos look similar to prior scans, scores should stay within ±3 points. Do not over-react to lighting, angle, or camera quality. If uncertain, anchor estimates to the prior rolling average above (or to the demographic baseline) and lower the confidence.
 
         Return ONLY strict JSON:
         {
@@ -114,7 +120,7 @@ nonisolated struct AIService {
         return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
     }
 
-    func analyzeFace(image: UIImage, measurements: FaceMeasurements?) async throws -> FaceAnalysis {
+    func analyzeFace(image: UIImage, measurements: FaceMeasurements?, history: ScoreHistory? = nil) async throws -> FaceAnalysis {
         let measureLine: String = {
             guard let m = measurements else { return "(no on-device measurements available)" }
             return """
@@ -126,13 +132,19 @@ nonisolated struct AIService {
             - jaw_ratio: \(String(format: "%.2f", m.jawRatio))
             """
         }()
+        let anchorLine: String = {
+            guard let h = history, !h.isEmpty else { return "(no prior scans — first analysis)" }
+            return "Prior rolling-average PSL scores to anchor against (deviate only when clearly justified): " + h.summary
+        }()
 
         let prompt = """
-        You are Ascend, an empathetic facial-harmony analyst. Analyze the front-facing photo objectively and kindly.
+        You are Ascend Life, an empathetic facial-harmony analyst. Analyze the front-facing photo objectively and kindly.
 
         \(measureLine)
 
-        IMPORTANT: Be deterministic. Base scores on the measurements above plus visible evidence. Identical inputs MUST produce identical outputs.
+        \(anchorLine)
+
+        IMPORTANT: Be deterministic and stable. Base scores on the measurements above plus visible evidence. Identical inputs MUST produce identical outputs. Similar photos must produce similar scores (within ±3 points). Do not over-react to lighting, expression, or camera differences.
 
         Return ONLY strict JSON:
         {
@@ -153,18 +165,32 @@ nonisolated struct AIService {
     }
 
     func analyzeMeal(description: String, image: UIImage?) async throws -> MealAnalysis {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptionLine: String = {
+            if trimmed.isEmpty {
+                return image == nil
+                    ? "No description provided."
+                    : "No description provided — identify the meal directly from the photo (foods, ingredients, portion sizes)."
+            }
+            return "User description / hint: \"\(trimmed)\"."
+        }()
+
         let prompt = """
-        You are Ascend's nutrition coach. Estimate macros for this meal: "\(description)".
+        You are Ascend Life's nutrition vision coach. Identify the meal and estimate accurate macros.
+
+        \(descriptionLine)
 
         Rules:
+        - If a photo is provided, look at it first: identify each visible food item, estimate portion sizes from plate / hand / utensil scale, then aggregate.
         - Calories must equal protein*4 + carbs*4 + fats*9 within ±10%.
-        - Use realistic portion sizes for a single serving unless described otherwise.
+        - Use realistic single-serving portions unless the photo clearly shows more.
         - Return integers only.
-        - If the description is vague, lower the confidence value.
+        - Lower the confidence if the photo is blurry, partial, or ambiguous; raise it if the meal is clearly visible.
+        - Never ask the user to clarify — always return a best estimate.
 
         Return ONLY strict JSON:
         {
-          "name": short meal name,
+          "name": short meal name (auto-generated from what you see),
           "calories": integer kcal,
           "proteinG": integer grams,
           "carbsG": integer grams,
@@ -285,6 +311,15 @@ nonisolated struct AIService {
 nonisolated struct ChatWire: Decodable {
     struct Choice: Decodable { struct Msg: Decodable { let content: String? }; let message: Msg }
     let choices: [Choice]
+}
+
+/// Compact rolling-average summary of recent scans, passed into AI prompts to
+/// anchor scores and reduce fluctuations between similar uploads.
+nonisolated struct ScoreHistory {
+    let summary: String
+    let isEmpty: Bool
+
+    static let none = ScoreHistory(summary: "", isEmpty: true)
 }
 
 nonisolated struct ProfileSnapshot {

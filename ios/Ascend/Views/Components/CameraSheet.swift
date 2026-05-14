@@ -4,9 +4,13 @@ import UIKit
 /// Wraps UIImagePickerController so we can take a live photo from inside the app.
 /// On the cloud simulator the camera is not available — call `CameraSheet.isAvailable`
 /// before presenting and show the placeholder card instead.
+///
+/// Front-camera selfies are mirrored on capture so the saved image matches the
+/// live preview the user just saw (this is the natural feel users expect).
 struct CameraSheet: UIViewControllerRepresentable {
     let onCapture: (UIImage) -> Void
     let onCancel: () -> Void
+    var preferFront: Bool = false
 
     static var isAvailable: Bool {
         UIImagePickerController.isSourceTypeAvailable(.camera)
@@ -20,6 +24,9 @@ struct CameraSheet: UIViewControllerRepresentable {
         let p = UIImagePickerController()
         p.sourceType = .camera
         p.cameraCaptureMode = .photo
+        if preferFront, UIImagePickerController.isCameraDeviceAvailable(.front) {
+            p.cameraDevice = .front
+        }
         p.allowsEditing = false
         p.delegate = context.coordinator
         return p
@@ -37,14 +44,47 @@ struct CameraSheet: UIViewControllerRepresentable {
 
         nonisolated func imagePickerController(_ picker: UIImagePickerController,
                                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            let img = info[.originalImage] as? UIImage
+            let raw = info[.originalImage] as? UIImage
+            let isFront = picker.cameraDevice == .front
+            let processed: UIImage? = {
+                guard let raw else { return nil }
+                let oriented = raw.normalizedOrientation()
+                return isFront ? oriented.horizontallyFlipped() : oriented
+            }()
             DispatchQueue.main.async { [onCapture, onCancel] in
-                if let img { onCapture(img) } else { onCancel() }
+                if let processed { onCapture(processed) } else { onCancel() }
             }
         }
 
         nonisolated func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             DispatchQueue.main.async { [onCancel] in onCancel() }
+        }
+    }
+}
+
+extension UIImage {
+    /// Re-renders the image with the .up orientation baked into the pixels.
+    nonisolated func normalizedOrientation() -> UIImage {
+        if imageOrientation == .up { return self }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { _ in
+            draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// Mirrors the image left-to-right (used for front-camera captures so the saved
+    /// photo matches the mirrored preview the user just saw).
+    nonisolated func horizontallyFlipped() -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { ctx in
+            let c = ctx.cgContext
+            c.translateBy(x: size.width, y: 0)
+            c.scaleBy(x: -1, y: 1)
+            draw(in: CGRect(origin: .zero, size: size))
         }
     }
 }
@@ -63,7 +103,7 @@ struct CameraUnavailableSheet: View {
                     .ambientFloat(amplitude: 3, duration: 3.4)
                 Text("Camera unavailable")
                     .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
-                Text("Install this app on your device via the Rork App to capture live photos. You can still upload from the library here.")
+                Text("Install Ascend Life on your device via the Rork App to capture live photos. You can still upload from the library here.")
                     .font(.aetherBody).foregroundStyle(Theme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)

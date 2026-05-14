@@ -13,9 +13,9 @@ enum ScanAngle: Int, CaseIterable {
     }
     var instruction: String {
         switch self {
-        case .front: "Stand facing the camera. Arms slightly away from your sides."
-        case .side:  "Turn 90°. Relax your shoulders and stand naturally."
-        case .back:  "Turn so the camera sees your back. Arms relaxed."
+        case .front: "Face the camera in a relaxed pose. Perfect alignment isn't required."
+        case .side:  "Turn roughly 90° and stand naturally. Shoulders relaxed."
+        case .back:  "Turn so the camera sees your back. Arms relaxed at your sides."
         }
     }
     var icon: String {
@@ -46,6 +46,7 @@ struct PhysiqueScanFlow: View {
     @State private var errorMsg: String?
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
+    @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var priorScans: [PhysiqueScanRecord]
 
     var body: some View {
         ZStack {
@@ -314,12 +315,15 @@ struct PhysiqueScanFlow: View {
             ZStack {
                 ForEach(0..<3) { i in
                     Circle()
-                        .strokeBorder(Theme.accent.opacity(0.5 - Double(i) * 0.15), lineWidth: 1)
-                        .frame(width: 180 + CGFloat(i) * 60, height: 180 + CGFloat(i) * 60)
+                        .strokeBorder(Theme.accent.opacity(0.45 - Double(i) * 0.12), lineWidth: 1)
+                        .frame(width: 200 + CGFloat(i) * 56, height: 200 + CGFloat(i) * 56)
                         .scaleEffect(1 + CGFloat(sin(analyzingPhase + Double(i))) * 0.04)
                 }
+                SkeletonTrace()
+                    .frame(width: 200, height: 280)
                 MeshScanAnimation(phase: analyzingPhase)
                     .frame(width: 220, height: 280)
+                    .opacity(0.55)
             }
             VStack(spacing: 6) {
                 Text(currentAnalyzingLabel.uppercased())
@@ -357,18 +361,19 @@ struct PhysiqueScanFlow: View {
     private func runAnalysis() async {
         guard let f = front, let s = side, let b = back else { return }
         let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw)
+        let history = PhysiqueSmoothing.history(from: priorScans)
         do {
             // Run pose + AI in parallel
-            async let aiTask = AIService.shared.analyzePhysique(front: f, side: s, back: b, profile: snap)
+            async let aiTask = AIService.shared.analyzePhysique(front: f, side: s, back: b, profile: snap, history: history)
             async let frontPose = PoseService.shared.analyze(f)
             async let sidePose = PoseService.shared.analyze(s)
             async let backPose = PoseService.shared.analyze(b)
 
-            let analysis = try await aiTask
+            let rawAnalysis = try await aiTask
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
             // Blend on-device landmark measurements with AI scores for deterministic, evidence-grounded results.
-            var symmetry = analysis.symmetry
-            var vTaper = analysis.vTaper
+            var symmetry = rawAnalysis.symmetry
+            var vTaper = rawAnalysis.vTaper
             var confidenceBoost: Double = 0
             if let fp = poses[0] {
                 symmetry = min(100, max(0, symmetry * 0.55 + fp.symmetry * 100 * 0.45))
@@ -382,16 +387,25 @@ struct PhysiqueScanFlow: View {
                 let backSym = bp.symmetry * 100
                 symmetry = min(100, max(0, symmetry * 0.7 + backSym * 0.3))
             }
-            let bodyFatConfidence = min(100, max(0, analysis.bodyFatConfidence + confidenceBoost))
+            let bodyFatConfidence = min(100, max(0, rawAnalysis.bodyFatConfidence + confidenceBoost))
             // Minimum dwell time for cinematic pacing (snappy)
             try? await Task.sleep(for: .seconds(1.2))
 
+            // Smooth final scores against the user's recent rolling average so similar
+            // photos don't produce wildly different numbers between sessions.
+            let analysis = PhysiqueSmoothing.smooth(
+                raw: rawAnalysis,
+                blendedSymmetry: symmetry,
+                blendedVTaper: vTaper,
+                priors: priorScans
+            )
+
             let record = PhysiqueScanRecord(
                 physiqueScore: analysis.physiqueScore,
-                symmetryScore: symmetry,
+                symmetryScore: analysis.symmetry,
                 muscularityScore: analysis.muscularity,
                 conditioningScore: analysis.conditioning,
-                vTaperScore: vTaper,
+                vTaperScore: analysis.vTaper,
                 bodyFatPercent: analysis.bodyFatPercent,
                 bodyFatConfidence: bodyFatConfidence,
                 archetypeRaw: analysis.archetype,

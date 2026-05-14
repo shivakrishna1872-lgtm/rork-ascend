@@ -66,8 +66,8 @@ struct OnboardingFlow: View {
         VStack(spacing: 0) {
             Spacer()
             AscendMark(size: 110).padding(.bottom, 28)
-            Text("Ascend")
-                .font(.system(size: 44, weight: .semibold)).tracking(8)
+            Text("Ascend Life")
+                .font(.system(size: 38, weight: .semibold)).tracking(6)
                 .foregroundStyle(Theme.textPrimary)
                 .blurFadeIn(delay: 0.15)
             Text("An operating system for self-improvement")
@@ -97,7 +97,7 @@ struct OnboardingFlow: View {
                     advance()
                 }
 
-                Text("By continuing, you accept that Ascend is an aid, not medical advice.")
+                Text("By continuing, you accept that Ascend Life is an aid, not medical advice.")
                     .font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
                     .multilineTextAlignment(.center).padding(.top, 6)
             }
@@ -379,6 +379,10 @@ struct OnboardingFlow: View {
         advance()
     }
 
+    private func requestNotifications() {
+        Task { await NotificationService.shared.requestAuthorization() }
+    }
+
     private func finish() {
         let finalName = name.trimmingCharacters(in: .whitespaces).isEmpty ? "Athlete" : name
         let finalAge = age ?? 24
@@ -410,6 +414,7 @@ struct OnboardingFlow: View {
             ctx.insert(u)
         }
         try? ctx.save()
+        if notifications { requestNotifications() }
         Haptics.success()
     }
 }

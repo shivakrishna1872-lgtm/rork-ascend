@@ -246,11 +246,22 @@ struct MealLogSheet: View {
                     .foregroundStyle(Theme.textTertiary)
                     .padding(.top, 18)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Describe it")
-                        .font(.system(size: 11, weight: .semibold)).tracking(1.5)
-                        .foregroundStyle(Theme.textTertiary)
-                    TextField("e.g. Chicken burrito bowl with guacamole", text: $description, axis: .vertical)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(image == nil ? "Describe it" : "Hint (optional)")
+                            .font(.system(size: 11, weight: .semibold)).tracking(1.5)
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer()
+                        if image != nil {
+                            Text("Auto-detected from photo".uppercased())
+                                .font(.system(size: 9, weight: .bold)).tracking(1.3)
+                                .foregroundStyle(Theme.good)
+                        }
+                    }
+                    TextField(image == nil
+                              ? "e.g. Chicken burrito bowl with guacamole"
+                              : "Optional — add details if the photo is unclear",
+                              text: $description, axis: .vertical)
                         .lineLimit(2...4)
                         .font(.system(size: 16, weight: .medium))
                         .padding(14)
@@ -311,8 +322,8 @@ struct MealLogSheet: View {
                     PrimaryButton(title: analyzing ? "Analyzing…" : "Analyze", icon: "sparkles", loading: analyzing) {
                         analyze()
                     }
-                    .disabled(description.trimmingCharacters(in: .whitespaces).isEmpty || analyzing)
-                    .opacity((description.trimmingCharacters(in: .whitespaces).isEmpty || analyzing) ? 0.5 : 1)
+                    .disabled(canAnalyze == false || analyzing)
+                    .opacity((canAnalyze == false || analyzing) ? 0.5 : 1)
                 }
 
                 Color.clear.frame(height: 30)
@@ -342,12 +353,23 @@ struct MealLogSheet: View {
         }
     }
 
+    private var canAnalyze: Bool {
+        // Either a photo OR a description is enough — vision auto-detects food.
+        image != nil || !description.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     private var analyzingPlaceholder: some View {
-        HStack(spacing: 12) {
-            ProgressView().tint(Theme.accentGlow)
-            Text("Estimating macros…").font(.aetherBody).foregroundStyle(Theme.textSecondary)
+        VStack(spacing: 14) {
+            FoodScanAnimation(image: image)
+                .frame(height: image == nil ? 80 : 180)
+            HStack(spacing: 8) {
+                ProgressView().tint(Theme.accentGlow).scaleEffect(0.85)
+                Text(image == nil ? "Estimating macros…" : "Identifying foods & portions…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+            }
         }
-        .frame(maxWidth: .infinity).padding(.vertical, 20)
+        .frame(maxWidth: .infinity).padding(.vertical, 16).padding(.horizontal, 12)
         .glassCard(radius: 16)
     }
 

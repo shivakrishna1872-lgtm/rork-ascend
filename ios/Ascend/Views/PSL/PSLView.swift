@@ -212,6 +212,7 @@ struct FaceScanSheet: View {
     @State private var revealStep: Int = 0
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
+    @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFaces: [FaceScanRecord]
 
     var body: some View {
         ZStack {
@@ -267,7 +268,8 @@ struct FaceScanSheet: View {
         .fullScreenCover(isPresented: $showCamera) {
             CameraSheet(
                 onCapture: { img in image = img; showCamera = false },
-                onCancel: { showCamera = false }
+                onCancel: { showCamera = false },
+                preferFront: true
             )
             .ignoresSafeArea()
         }
@@ -379,45 +381,37 @@ struct FaceScanSheet: View {
             ZStack {
                 ForEach(0..<3) { i in
                     Circle()
-                        .strokeBorder(Theme.accent.opacity(0.5 - Double(i) * 0.15), lineWidth: 1)
-                        .frame(width: 200 + CGFloat(i) * 60, height: 200 + CGFloat(i) * 60)
+                        .strokeBorder(Theme.accent.opacity(0.45 - Double(i) * 0.12), lineWidth: 1)
+                        .frame(width: 220 + CGFloat(i) * 56, height: 220 + CGFloat(i) * 56)
                         .scaleEffect(1 + CGFloat(sin(phase + Double(i))) * 0.04)
                 }
-                if let image {
-                    Image(uiImage: image)
-                        .resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 180, height: 220)
-                        .clipShape(.rect(cornerRadius: 24))
-                        .overlay(
-                            // scan beam
-                            Rectangle()
-                                .fill(LinearGradient(
-                                    colors: [.clear, Theme.accentGlow.opacity(0.9), .clear],
-                                    startPoint: .leading, endPoint: .trailing
-                                ))
-                                .frame(height: 2)
-                                .blur(radius: 1)
-                                .offset(y: CGFloat(sin(phase * 2) * 100))
-                                .blendMode(.plusLighter)
-                        )
-                        .blur(radius: 1.4)
-                        .opacity(0.85)
-                }
+                FaceMeshSweep(image: image)
+                    .frame(width: 200, height: 240)
+                    .clipShape(.rect(cornerRadius: 24))
+                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+                    .shadow(color: Theme.accent.opacity(0.4), radius: 18)
             }
             VStack(spacing: 6) {
-                Text("Mapping landmarks".uppercased())
+                Text(analyzingLabel.uppercased())
                     .font(.system(size: 11, weight: .semibold)).tracking(2.5)
                     .foregroundStyle(Theme.accentGlow)
+                    .contentTransition(.opacity)
                 Text("Analyzing facial harmony")
                     .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
             }
             Spacer()
         }
         .onAppear {
-            withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
+            withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) {
                 phase = .pi * 2
             }
         }
+    }
+
+    private var analyzingLabel: String {
+        let phases = ["Mapping landmarks", "Measuring symmetry", "Analyzing thirds", "Reading jawline", "Synthesizing harmony"]
+        let idx = Int(phase / (.pi * 2 / Double(phases.count))) % phases.count
+        return phases[idx]
     }
 
     private var facePortrait: some View {
@@ -478,7 +472,9 @@ struct FaceScanSheet: View {
         do {
             async let measure = PoseService.shared.analyzeFace(img)
             let m = await measure
-            let r = try await AIService.shared.analyzeFace(image: img, measurements: m)
+            let history = FaceSmoothing.history(from: priorFaces)
+            let rawAnalysis = try await AIService.shared.analyzeFace(image: img, measurements: m, history: history)
+            let r = FaceSmoothing.smooth(raw: rawAnalysis, priors: priorFaces)
             try? await Task.sleep(for: .seconds(1.0))
             let record = FaceScanRecord(
                 overallScore: r.overall,

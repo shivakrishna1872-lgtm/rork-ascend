@@ -82,13 +82,14 @@ nonisolated struct PoseService {
 
         let bright = brightness(cg: cg)
 
+        // Lenient quality checks — only flag truly problematic captures so the
+        // user isn't blocked from analysing imperfect-but-usable photos.
         var issues: [String] = []
-        if confCount < 6 { issues.append("Body not fully visible") }
-        if bright < 0.18 { issues.append("Lighting is too dark") }
-        if bright > 0.92 { issues.append("Lighting is too bright") }
-        if abs(centerX - 0.5) > 0.18 { issues.append("Center your body in frame") }
-        if coverageY < 0.55 { issues.append("Stand farther so your full body fits") }
-        if coverageY > 0.97 { issues.append("Step back slightly") }
+        if confCount < 4 { issues.append("Body not fully visible") }
+        if bright < 0.10 { issues.append("Lighting is too dark") }
+        if bright > 0.96 { issues.append("Lighting is too bright") }
+        if abs(centerX - 0.5) > 0.30 { issues.append("Try to center your body in frame") }
+        if coverageY < 0.40 { issues.append("Move closer or stand farther so more of your body fits") }
 
         return PoseResult(
             landmarks: landmarks,

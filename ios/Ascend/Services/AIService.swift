@@ -99,7 +99,16 @@ nonisolated struct AIService {
 
         \(anchorLine)
 
-        IMPORTANT: Be deterministic and stable. Use ONLY visible evidence. Identical inputs MUST produce identical outputs. If the new photos look similar to prior scans, scores should stay within ±3 points. Do not over-react to lighting, angle, or camera quality. If uncertain, anchor estimates to the prior rolling average above (or to the demographic baseline) and lower the confidence.
+        ACCURACY RULES:
+        - Use visible anatomical evidence ONLY. Cross-reference all three views before committing to a score.
+        - Anchor body-fat estimate using visible markers: abdominal definition, vascularity, waist taper, deltoid striations, glute-ham separation. Use the user's BMI (\(String(format: "%.1f", profile.weightKg / pow(profile.heightCm/100, 2)))) as a sanity check.
+        - Symmetry = compare LEFT vs RIGHT across shoulders, arms, lats, legs in the front + back views.
+        - V-taper = shoulder-to-waist ratio measured visually from the front view.
+        - Muscularity = development relative to demographic norms for the user's sex/age/weight.
+        - Conditioning = leanness + definition + separation.
+        - If a photo is partial (waist-up only, etc.) STILL produce a confident estimate from visible regions and slightly lower bodyFatConfidence.
+
+        STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, angle, or partial framing.
 
         Return ONLY strict JSON:
         {
@@ -115,7 +124,7 @@ nonisolated struct AIService {
           "recommendations": array of 3 short, action-oriented tips, never insulting
         }
 
-        Use side view for posture, back for symmetry, front for proportions. Output JSON only.
+        Output JSON only.
         """
         return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
     }
@@ -144,7 +153,16 @@ nonisolated struct AIService {
 
         \(anchorLine)
 
-        IMPORTANT: Be deterministic and stable. Base scores on the measurements above plus visible evidence. Identical inputs MUST produce identical outputs. Similar photos must produce similar scores (within ±3 points). Do not over-react to lighting, expression, or camera differences.
+        ACCURACY RULES — base every score on geometry, not vibe:
+        - symmetry: derive primarily from the on-device symmetry_index. Penalize visible left/right deviation in eyes, brows, mouth corners, jaw.
+        - jawline: judge mandibular angle sharpness, gonial angle, chin projection, and submental definition. Lower scores for soft/recessed jaws; higher for defined angular jaws. Use jaw_ratio as an anchor (ideal 0.70-0.80).
+        - thirds: lock to the thirds_balance measurement; perfect = each third near 33%.
+        - canthalTilt: positive degrees (upturned) score higher; neutral around 4°. Map canthal_tilt_deg → score (negative ≈ 40, 0° ≈ 60, +4° ≈ 80, +8°+ ≈ 95).
+        - eyeSpacing: ideal intercanthal ≈ one eye width (ratio ≈ 1.0). Penalize ratios <0.85 or >1.15.
+        - overall: weighted blend of the five — symmetry 25%, jawline 25%, thirds 15%, canthalTilt 15%, eyeSpacing 10%, plus a 10% adjustment for skin/grooming/posture visible in the photo.
+        - glowUpPotential: estimate realistic upside from grooming, body-fat reduction, sleep, posture, skincare. Higher when current overall is mid (50-70), lower when already high.
+
+        STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, expression, or camera differences.
 
         Return ONLY strict JSON:
         {

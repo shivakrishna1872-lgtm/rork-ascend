@@ -203,8 +203,8 @@ struct FaceScanSheet: View {
     @Environment(\.modelContext) private var ctx
     @Environment(AppState.self) private var app
 
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var image: UIImage?
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var images: [UIImage] = []
     @State private var analyzing = false
     @State private var phase: Double = 0
     @State private var result: FaceScanRecord?
@@ -213,6 +213,9 @@ struct FaceScanSheet: View {
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFaces: [FaceScanRecord]
+
+    private let minPhotos = 3
+    private let maxPhotos = 5
 
     var body: some View {
         ZStack {
@@ -256,18 +259,29 @@ struct FaceScanSheet: View {
                 pickerView
             }
         }
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
+        .onChange(of: pickerItems) { _, items in
+            guard !items.isEmpty else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self),
-                   let img = UIImage(data: data) {
-                    await MainActor.run { image = img }
+                var loaded: [UIImage] = []
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let img = UIImage(data: data) {
+                        loaded.append(img)
+                    }
+                }
+                await MainActor.run {
+                    let combined = (images + loaded).suffix(maxPhotos)
+                    images = Array(combined)
+                    pickerItems = []
                 }
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraSheet(
-                onCapture: { img in image = img; showCamera = false },
+                onCapture: { img in
+                    if images.count < maxPhotos { images.append(img) }
+                    showCamera = false
+                },
                 onCancel: { showCamera = false },
                 preferFront: true
             )
@@ -292,87 +306,144 @@ struct FaceScanSheet: View {
     }
 
     private var pickerView: some View {
-        VStack(spacing: 20) {
-            topBar
-            VStack(spacing: 6) {
-                Text("Facial Analysis".uppercased())
-                    .font(.system(size: 11, weight: .semibold)).tracking(2.5)
-                    .foregroundStyle(Theme.accentGlow)
-                Text("Front-facing photo")
-                    .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
-                Text("Neutral lighting, head straight, no glasses.")
-                    .font(.aetherBody).foregroundStyle(Theme.textSecondary)
-            }
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 28).fill(Color.black.opacity(0.6))
-                    .frame(height: 340)
-                    .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
-                if let image {
-                    Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
-                        .frame(height: 340)
-                        .clipShape(.rect(cornerRadius: 28))
-                } else {
-                    Image(systemName: "face.smiling")
-                        .font(.system(size: 120, weight: .ultraLight))
-                        .foregroundStyle(Theme.accent.opacity(0.4))
+        ScrollView {
+            VStack(spacing: 18) {
+                topBar
+                VStack(spacing: 6) {
+                    Text("Facial Analysis".uppercased())
+                        .font(.system(size: 11, weight: .semibold)).tracking(2.5)
+                        .foregroundStyle(Theme.accentGlow)
+                    Text("Multi-photo harmony")
+                        .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
+                    Text("Add \(minPhotos)–\(maxPhotos) front-facing photos. We average across all of them so your score stays stable across lighting and angles.")
+                        .font(.aetherBody).foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
                 }
-                // Symmetry guides
-                if image == nil {
-                    VStack {
-                        Spacer()
-                        Rectangle().fill(Theme.accent.opacity(0.25)).frame(width: 0.5).frame(height: 280)
-                        Spacer()
+
+                photoStrip
+                    .padding(.horizontal, 20)
+
+                progressIndicator
+
+                HStack(spacing: 10) {
+                    Button {
+                        Haptics.tap()
+                        if CameraSheet.isAvailable { showCamera = true }
+                        else { showCameraUnavailable = true }
+                    } label: {
+                        HStack {
+                            Image(systemName: "camera.fill")
+                            Text("Take Photo")
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: 54)
+                        .glassCard(radius: 14)
                     }
-                }
-            }
-            .padding(.horizontal, 20)
+                    .buttonStyle(.plain)
+                    .disabled(images.count >= maxPhotos)
+                    .opacity(images.count >= maxPhotos ? 0.5 : 1)
 
-            HStack(spacing: 10) {
-                Button {
-                    Haptics.tap()
-                    if CameraSheet.isAvailable { showCamera = true }
-                    else { showCameraUnavailable = true }
-                } label: {
-                    HStack {
-                        Image(systemName: "camera.fill")
-                        Text("Take Photo")
+                    PhotosPicker(selection: $pickerItems, maxSelectionCount: maxPhotos - images.count, matching: .images) {
+                        HStack {
+                            Image(systemName: "photo.on.rectangle.angled")
+                            Text(images.isEmpty ? "Upload" : "Add More")
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: 54)
+                        .glassCard(radius: 14)
                     }
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .frame(maxWidth: .infinity).frame(height: 54)
-                    .glassCard(radius: 14)
-                }
-                .buttonStyle(.plain)
-
-                PhotosPicker(selection: $pickerItem, matching: .images) {
-                    HStack {
-                        Image(systemName: "photo.on.rectangle.angled")
-                        Text(image == nil ? "Upload" : "Change")
-                    }
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .frame(maxWidth: .infinity).frame(height: 54)
-                    .glassCard(radius: 14)
-                }
-            }
-            .padding(.horizontal, 20)
-
-            if let image {
-                PrimaryButton(title: "Analyze", icon: "sparkles") {
-                    Task { await analyze(image) }
+                    .disabled(images.count >= maxPhotos)
+                    .opacity(images.count >= maxPhotos ? 0.5 : 1)
                 }
                 .padding(.horizontal, 20)
-            }
 
-            if let error {
-                Text(error).font(.aetherBody).foregroundStyle(Theme.bad)
+                if images.count >= minPhotos {
+                    PrimaryButton(title: "Analyze \(images.count) photos", icon: "sparkles") {
+                        Task { await analyze(images) }
+                    }
                     .padding(.horizontal, 20)
-            }
+                } else if !images.isEmpty {
+                    Text("Add \(minPhotos - images.count) more photo\(minPhotos - images.count == 1 ? "" : "s") to enable analysis.")
+                        .font(.aetherCaption).foregroundStyle(Theme.textTertiary)
+                }
 
-            Spacer()
+                if let error {
+                    Text(error).font(.aetherBody).foregroundStyle(Theme.bad)
+                        .padding(.horizontal, 20)
+                }
+
+                Color.clear.frame(height: 40)
+            }
+            .padding(.top, 8)
         }
-        .padding(.top, 8)
+        .scrollIndicators(.hidden)
+    }
+
+    private var photoStrip: some View {
+        let slots: [UIImage?] = (0..<maxPhotos).map { idx in idx < images.count ? images[idx] : nil }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(slots.enumerated()), id: \.offset) { idx, img in
+                    photoSlot(image: img, index: idx)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(height: 160)
+    }
+
+    private func photoSlot(image img: UIImage?, index: Int) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.opacity(0.55)
+                .frame(width: 110, height: 150)
+                .overlay {
+                    if let img {
+                        Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                            .allowsHitTesting(false)
+                    } else {
+                        VStack(spacing: 6) {
+                            Image(systemName: index == 0 ? "face.smiling" : "plus")
+                                .font(.system(size: 28, weight: .light))
+                                .foregroundStyle(Theme.accent.opacity(0.55))
+                            Text("\(index + 1)")
+                                .font(.system(size: 10, weight: .semibold)).tracking(1)
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+                .clipShape(.rect(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(img == nil ? Theme.line : Theme.accentGlow.opacity(0.5), lineWidth: 0.8))
+
+            if img != nil {
+                Button {
+                    Haptics.tap()
+                    if index < images.count { images.remove(at: index) }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(Color.black.opacity(0.7)))
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+            }
+        }
+    }
+
+    private var progressIndicator: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<maxPhotos, id: \.self) { i in
+                Capsule()
+                    .fill(i < images.count ? Theme.accentGlow : Theme.line)
+                    .frame(width: i < images.count ? 20 : 12, height: 3)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.85), value: images.count)
+            }
+        }
+        .padding(.top, 2)
     }
 
     private var analyzingView: some View {
@@ -385,7 +456,7 @@ struct FaceScanSheet: View {
                         .frame(width: 220 + CGFloat(i) * 56, height: 220 + CGFloat(i) * 56)
                         .scaleEffect(1 + CGFloat(sin(phase + Double(i))) * 0.04)
                 }
-                FaceMeshSweep(image: image)
+                FaceMeshSweep(image: images.first)
                     .frame(width: 200, height: 240)
                     .clipShape(.rect(cornerRadius: 24))
                     .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
@@ -396,8 +467,10 @@ struct FaceScanSheet: View {
                     .font(.system(size: 11, weight: .semibold)).tracking(2.5)
                     .foregroundStyle(Theme.accentGlow)
                     .contentTransition(.opacity)
-                Text("Analyzing facial harmony")
+                Text("Averaging \(images.count) photos")
                     .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
+                Text("Cross-checking symmetry across all uploads…")
+                    .font(.aetherCaption).foregroundStyle(Theme.textTertiary)
             }
             Spacer()
         }
@@ -409,7 +482,7 @@ struct FaceScanSheet: View {
     }
 
     private var analyzingLabel: String {
-        let phases = ["Mapping landmarks", "Measuring symmetry", "Analyzing thirds", "Reading jawline", "Synthesizing harmony"]
+        let phases = ["Mapping landmarks", "Averaging symmetry", "Analyzing thirds", "Reading jawline", "Synthesizing harmony"]
         let idx = Int(phase / (.pi * 2 / Double(phases.count))) % phases.count
         return phases[idx]
     }
@@ -467,15 +540,32 @@ struct FaceScanSheet: View {
         }
     }
 
-    private func analyze(_ img: UIImage) async {
+    private func analyze(_ imgs: [UIImage]) async {
         analyzing = true
         do {
-            async let measure = PoseService.shared.analyzeFace(img)
-            let m = await measure
+            // 1) Run on-device MediaPipe-equivalent face landmark analysis on EVERY photo.
+            var samples: [FaceMeasurements] = []
+            for img in imgs {
+                if let m = await PoseService.shared.analyzeFace(img) { samples.append(m) }
+            }
+            // 2) Trimmed-mean average so a bad-angle photo can't swing scores.
+            let averaged = FaceMeasurements.averaged(samples)
+            let consistency = FaceMeasurements.consistency(samples)
+
+            // 3) AI cross-references all images, anchored to the averaged measurements.
             let history = FaceSmoothing.history(from: priorFaces)
-            let rawAnalysis = try await AIService.shared.analyzeFace(image: img, measurements: m, history: history)
+            let rawAnalysis = try await AIService.shared.analyzeFace(
+                images: imgs,
+                measurements: averaged,
+                sampleCount: samples.count,
+                consistency: consistency,
+                history: history
+            )
+            // 4) Blend long-term rolling history for cross-session stability.
             let r = FaceSmoothing.smooth(raw: rawAnalysis, priors: priorFaces)
             try? await Task.sleep(for: .seconds(1.0))
+            // Save the first (sharpest) photo as the record preview.
+            let preview = imgs.first?.jpegData(compressionQuality: 0.7)
             let record = FaceScanRecord(
                 overallScore: r.overall,
                 symmetry: r.symmetry,
@@ -487,7 +577,7 @@ struct FaceScanSheet: View {
                 recommendations: r.recommendations,
                 hairstyles: r.hairstyles,
                 insight: r.insight,
-                imageData: img.jpegData(compressionQuality: 0.7)
+                imageData: preview
             )
             ctx.insert(record)
             app.bumpStreakIfNeeded(user)

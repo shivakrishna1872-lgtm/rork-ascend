@@ -372,23 +372,41 @@ struct PhysiqueScanFlow: View {
 
             let rawAnalysis = try await aiTask
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
-            // Blend on-device landmark measurements with AI scores for deterministic, evidence-grounded results.
-            var symmetry = rawAnalysis.symmetry
-            var vTaper = rawAnalysis.vTaper
-            var confidenceBoost: Double = 0
-            if let fp = poses[0] {
-                symmetry = min(100, max(0, symmetry * 0.55 + fp.symmetry * 100 * 0.45))
-                // V-taper estimated from shoulder/hip ratio (1.0..1.8 typical)
-                let r = max(0.9, min(1.9, fp.shoulderWaistRatio))
-                let vMeasured = min(100, max(0, (r - 1.0) * 125)) // 1.0 -> 0, 1.8 -> 100
-                vTaper = min(100, max(0, vTaper * 0.55 + vMeasured * 0.45))
-                confidenceBoost = fp.confidenceAverage * 15 // up to +15%
+
+            // --- Multi-angle averaging (MediaPipe-style) ---
+            // Symmetry: trimmed-mean across every angle that detected a body.
+            // Front + back are weighted higher than side (side view distorts L/R).
+            let symmetrySamples: [(value: Double, weight: Double)] = [
+                poses[0].map { ($0.symmetry * 100, 1.0) },
+                poses[1].map { ($0.symmetry * 100, 0.4) },
+                poses[2].map { ($0.symmetry * 100, 0.9) }
+            ].compactMap { $0 }
+            let measuredSymmetry: Double = {
+                guard !symmetrySamples.isEmpty else { return rawAnalysis.symmetry }
+                let totalW = symmetrySamples.reduce(0) { $0 + $1.weight }
+                return symmetrySamples.reduce(0) { $0 + $1.value * $1.weight } / totalW
+            }()
+            // V-taper: averaged shoulder/hip ratio from front + back; side is unreliable.
+            let vTaperSamples: [Double] = [poses[0], poses[2]].compactMap { p in
+                guard let p else { return nil }
+                let r = max(0.9, min(1.9, p.shoulderWaistRatio))
+                return min(100, max(0, (r - 1.0) * 125))
             }
-            if let bp = poses[2] {
-                let backSym = bp.symmetry * 100
-                symmetry = min(100, max(0, symmetry * 0.7 + backSym * 0.3))
-            }
-            let bodyFatConfidence = min(100, max(0, rawAnalysis.bodyFatConfidence + confidenceBoost))
+            let measuredVTaper: Double = vTaperSamples.isEmpty
+                ? rawAnalysis.vTaper
+                : vTaperSamples.reduce(0, +) / Double(vTaperSamples.count)
+
+            // Blend AI + averaged on-device measurements (45/55 toward on-device for stability).
+            let symmetry = min(100, max(0, rawAnalysis.symmetry * 0.45 + measuredSymmetry * 0.55))
+            let vTaper = min(100, max(0, rawAnalysis.vTaper * 0.45 + measuredVTaper * 0.55))
+
+            // Confidence boost scales with the NUMBER of angles successfully detected.
+            let detected = poses.compactMap { $0 }
+            let avgPoseConfidence = detected.isEmpty
+                ? 0
+                : detected.map(\.confidenceAverage).reduce(0, +) / Double(detected.count)
+            let coverageBoost = Double(detected.count) * 5.0 // +5/angle, up to +15
+            let bodyFatConfidence = min(100, max(0, rawAnalysis.bodyFatConfidence + avgPoseConfidence * 10 + coverageBoost))
             // Minimum dwell time for cinematic pacing (snappy)
             try? await Task.sleep(for: .seconds(1.2))
 

@@ -129,16 +129,17 @@ nonisolated struct AIService {
         return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
     }
 
-    func analyzeFace(image: UIImage, measurements: FaceMeasurements?, history: ScoreHistory? = nil) async throws -> FaceAnalysis {
+    func analyzeFace(images: [UIImage], measurements: FaceMeasurements?, sampleCount: Int = 1, consistency: Double = 0.5, history: ScoreHistory? = nil) async throws -> FaceAnalysis {
         let measureLine: String = {
             guard let m = measurements else { return "(no on-device measurements available)" }
             return """
-            On-device landmark measurements (anchor your scores to these):
+            On-device MediaPipe-style landmark measurements averaged across \(sampleCount) photo(s) (anchor your scores to these — they are angle/lighting-invariant):
             - symmetry_index: \(Int(m.symmetry * 100))/100
             - thirds_balance: \(Int(m.thirds * 100))/100
             - canthal_tilt_deg: \(String(format: "%.1f", m.canthalTiltDeg))
             - eye_spacing_ratio: \(String(format: "%.2f", m.eyeSpacingRatio))
             - jaw_ratio: \(String(format: "%.2f", m.jawRatio))
+            - sample_agreement: \(Int(consistency * 100))/100 (higher = more consistent across photos)
             """
         }()
         let anchorLine: String = {
@@ -162,6 +163,8 @@ nonisolated struct AIService {
         - overall: weighted blend of the five — symmetry 25%, jawline 25%, thirds 15%, canthalTilt 15%, eyeSpacing 10%, plus a 10% adjustment for skin/grooming/posture visible in the photo.
         - glowUpPotential: estimate realistic upside from grooming, body-fat reduction, sleep, posture, skincare. Higher when current overall is mid (50-70), lower when already high.
 
+        MULTI-PHOTO AVERAGING: You are looking at \(images.count) photo(s) of the SAME person. Compute scores for each, then RETURN THE AVERAGE. Do not pick the best or worst photo. The symmetry score must be primarily driven by the on-device symmetry_index above (which is already averaged across all photos) so it stays stable across angles/lighting.
+
         STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, expression, or camera differences.
 
         Return ONLY strict JSON:
@@ -179,7 +182,7 @@ nonisolated struct AIService {
         }
         Output JSON only. Never insult.
         """
-        return try await callJSONVision(prompt: prompt, images: [image], as: FaceAnalysis.self)
+        return try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
     }
 
     func analyzeMeal(description: String, image: UIImage?) async throws -> MealAnalysis {

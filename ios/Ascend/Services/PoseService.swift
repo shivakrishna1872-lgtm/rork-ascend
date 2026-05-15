@@ -20,6 +20,49 @@ nonisolated struct FaceMeasurements {
     let canthalTiltDeg: Double    // degrees (positive = upturned)
     let eyeSpacingRatio: Double   // intercanthal / eye-width
     let jawRatio: Double          // jaw width / face height
+
+    /// Robust trimmed-mean average across multiple measurements.
+    /// Drops the single highest + lowest sample when 4+ are present so a
+    /// bad-angle or bad-lighting photo can't swing the symmetry score.
+    static func averaged(_ samples: [FaceMeasurements]) -> FaceMeasurements? {
+        guard !samples.isEmpty else { return nil }
+        if samples.count == 1 { return samples[0] }
+
+        func trimmed(_ values: [Double]) -> Double {
+            let sorted = values.sorted()
+            let trimmedValues: [Double]
+            if sorted.count >= 4 {
+                trimmedValues = Array(sorted.dropFirst().dropLast())
+            } else {
+                trimmedValues = sorted
+            }
+            return trimmedValues.reduce(0, +) / Double(trimmedValues.count)
+        }
+
+        return FaceMeasurements(
+            symmetry: trimmed(samples.map(\.symmetry)),
+            thirds: trimmed(samples.map(\.thirds)),
+            canthalTiltDeg: trimmed(samples.map(\.canthalTiltDeg)),
+            eyeSpacingRatio: trimmed(samples.map(\.eyeSpacingRatio)),
+            jawRatio: trimmed(samples.map(\.jawRatio))
+        )
+    }
+
+    /// Sample-to-sample agreement (0..1). High when samples are consistent —
+    /// used to scale AI confidence and decide if enough data has been gathered.
+    static func consistency(_ samples: [FaceMeasurements]) -> Double {
+        guard samples.count >= 2 else { return 0.5 }
+        func spread(_ values: [Double]) -> Double {
+            let mean = values.reduce(0, +) / Double(values.count)
+            let variance = values.map { pow($0 - mean, 2) }.reduce(0, +) / Double(values.count)
+            return sqrt(variance)
+        }
+        let symSpread = spread(samples.map(\.symmetry))
+        let thirdsSpread = spread(samples.map(\.thirds))
+        let canthalSpread = spread(samples.map(\.canthalTiltDeg)) / 20.0
+        let total = symSpread + thirdsSpread + canthalSpread
+        return max(0, min(1, 1 - total))
+    }
 }
 
 nonisolated struct PoseService {

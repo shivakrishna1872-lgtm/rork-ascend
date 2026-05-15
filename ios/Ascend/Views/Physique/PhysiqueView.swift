@@ -119,6 +119,17 @@ struct PhysiqueView: View {
                     miniMetric("V-Taper", rec.vTaperScore)
                 }
 
+                let calibration = PhysiqueSmoothing.calibration(from: scans)
+                if !calibration.isEmpty {
+                    HStack {
+                        CalibrationBadge(calibration: calibration)
+                        Spacer()
+                        Text("baseline".uppercased())
+                            .font(.system(size: 9, weight: .semibold)).tracking(1.4)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                }
+
                 PrimaryButton(title: "New Scan", icon: "plus.viewfinder") {
                     showScanFlow = true
                 }

@@ -85,6 +85,14 @@ struct HomeView: View {
         .padding(.bottom, 4)
     }
 
+    private var physiqueCalibration: Calibration { PhysiqueSmoothing.calibration(from: scans) }
+    private var faceCalibration: Calibration { FaceSmoothing.calibration(from: faces) }
+
+    /// Strongest of the two, used as the headline calibration on the hero card.
+    private var headlineCalibration: Calibration {
+        physiqueCalibration.score >= faceCalibration.score ? physiqueCalibration : faceCalibration
+    }
+
     private var heroCard: some View {
         VStack(spacing: 18) {
             HStack(alignment: .top) {
@@ -95,6 +103,10 @@ struct HomeView: View {
                     Text(user.tier.subtitle)
                         .font(.aetherTitle2)
                         .foregroundStyle(Theme.textPrimary)
+                    if !headlineCalibration.isEmpty {
+                        CalibrationBadge(calibration: headlineCalibration)
+                            .padding(.top, 4)
+                    }
                 }
                 Spacer()
                 ZStack {

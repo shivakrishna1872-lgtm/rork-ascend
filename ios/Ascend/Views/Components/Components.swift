@@ -120,6 +120,63 @@ struct MetricChip: View {
     }
 }
 
+// MARK: - Calibration badge
+
+/// Compact pill that surfaces how trustworthy the user's personal baseline is.
+/// Appears once the user has at least one stored scan; visually intensifies as
+/// the calibration locks in.
+struct CalibrationBadge: View {
+    let calibration: Calibration
+    var compact: Bool = false
+
+    private var tint: Color {
+        switch calibration.stage {
+        case .empty, .calibrating: return Theme.warn
+        case .stable: return Theme.accentGlow
+        case .lockedIn: return Theme.good
+        }
+    }
+
+    var body: some View {
+        if calibration.isEmpty { EmptyView() } else {
+            HStack(spacing: compact ? 6 : 8) {
+                ZStack {
+                    Circle().stroke(tint.opacity(0.25), lineWidth: 1.5)
+                    Circle()
+                        .trim(from: 0, to: max(0.08, calibration.score))
+                        .stroke(tint, style: .init(lineWidth: 1.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: tint.opacity(0.6), radius: 3)
+                    Image(systemName: calibration.stage == .lockedIn ? "checkmark" : "waveform.path.ecg")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(tint)
+                }
+                .frame(width: compact ? 16 : 18, height: compact ? 16 : 18)
+                if !compact {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(calibration.stage.label)
+                            .font(.system(size: 9, weight: .heavy)).tracking(1.4)
+                            .foregroundStyle(tint)
+                        Text("\(calibration.sampleCount)/\(calibration.sampleCap) scans")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                } else {
+                    Text(calibration.stage.label)
+                        .font(.system(size: 9, weight: .heavy)).tracking(1.2)
+                        .foregroundStyle(tint)
+                }
+            }
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.vertical, compact ? 5 : 6)
+            .background(Capsule().fill(Color.black.opacity(0.35)))
+            .overlay(Capsule().strokeBorder(tint.opacity(0.4), lineWidth: 0.6))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Calibration \(calibration.stage.label.lowercased()), \(calibration.sampleCount) of \(calibration.sampleCap) scans")
+        }
+    }
+}
+
 // MARK: - Section header
 
 struct SectionHeader: View {

@@ -186,6 +186,28 @@ enum PhysiqueSmoothing {
         )
     }
 
+    /// Calibration confidence in 0...1 derived from sample count + score stability.
+    /// Surfaces a "how trustworthy is this baseline" signal to the user.
+    static func calibration(from records: [PhysiqueScanRecord]) -> Calibration {
+        let recent = Array(records.prefix(8))
+        guard !recent.isEmpty else { return .none }
+        let n = Double(recent.count)
+        func avg(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / n
+        }
+        func std(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / n
+            return sqrt(v)
+        }
+        let stdAvg = (std(\.physiqueScore) + std(\.symmetryScore)
+                      + std(\.muscularityScore) + std(\.conditioningScore)
+                      + std(\.vTaperScore)) / 5
+        return Calibration(sampleCount: recent.count,
+                           sampleCap: 8,
+                           dispersion: stdAvg)
+    }
+
     static func history(from records: [PhysiqueScanRecord]) -> ScoreHistory {
         let recent = Array(records.prefix(8))
         guard !recent.isEmpty else { return .none }
@@ -247,6 +269,26 @@ enum FaceSmoothing {
         )
     }
 
+    static func calibration(from records: [FaceScanRecord]) -> Calibration {
+        let recent = Array(records.prefix(8))
+        guard !recent.isEmpty else { return .none }
+        let n = Double(recent.count)
+        func avg(_ key: (FaceScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / n
+        }
+        func std(_ key: (FaceScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / n
+            return sqrt(v)
+        }
+        let stdAvg = (std(\.overallScore) + std(\.symmetry) + std(\.jawline)
+                      + std(\.thirds) + std(\.canthalTilt)
+                      + std(\.eyeSpacing)) / 6
+        return Calibration(sampleCount: recent.count,
+                           sampleCap: 8,
+                           dispersion: stdAvg)
+    }
+
     static func history(from records: [FaceScanRecord]) -> ScoreHistory {
         let recent = Array(records.prefix(8))
         guard !recent.isEmpty else { return .none }
@@ -274,6 +316,48 @@ enum FaceSmoothing {
         recent trend on overall: \(String(format: "%+.1f", trend))
         """
         return ScoreHistory(summary: s, isEmpty: false)
+    }
+}
+
+// MARK: - Calibration model
+
+/// Trust level for the user's personal baseline. Improves as more scans are
+/// logged AND as recent score variance settles down.
+nonisolated struct Calibration: Equatable {
+    let sampleCount: Int
+    let sampleCap: Int
+    let dispersion: Double // average std across metrics
+
+    static let none = Calibration(sampleCount: 0, sampleCap: 8, dispersion: 0)
+
+    var isEmpty: Bool { sampleCount == 0 }
+
+    /// 0...1 — combines sample size and inverse dispersion.
+    var score: Double {
+        guard sampleCount > 0 else { return 0 }
+        let sampleWeight = min(1.0, Double(sampleCount) / Double(sampleCap))
+        // Dispersion of ~10 pts is rough; <3 is locked-in.
+        let stability = max(0, min(1, 1 - (dispersion / 10)))
+        return sampleWeight * 0.55 + stability * 0.45
+    }
+
+    var stage: Stage {
+        if sampleCount == 0 { return .empty }
+        if sampleCount < 3 || score < 0.45 { return .calibrating }
+        if score < 0.75 { return .stable }
+        return .lockedIn
+    }
+
+    enum Stage {
+        case empty, calibrating, stable, lockedIn
+        var label: String {
+            switch self {
+            case .empty: return "AWAITING DATA"
+            case .calibrating: return "CALIBRATING"
+            case .stable: return "STABLE"
+            case .lockedIn: return "LOCKED-IN"
+            }
+        }
     }
 }
 

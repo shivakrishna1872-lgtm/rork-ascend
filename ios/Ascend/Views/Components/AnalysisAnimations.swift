@@ -6,115 +6,190 @@ import SwiftUI
 // identifies foods and estimates portions. When no photo is present we
 // fall back to a calorie-orbit motif.
 
+// A premium replacement matching the IrisOrbit / ParticleBody style:
+// the meal photo sits inside a hexagonal lattice with three orbiting macro
+// tokens (P / C / F), a diagonal shimmer pass, and a soft scan beam. When
+// no photo is present we show an orbital calorie motif on its own.
+
 struct FoodScanAnimation: View {
     let image: UIImage?
-    @State private var sweep: CGFloat = -1
+    @State private var rotation: Double = 0
+    @State private var shimmer: CGFloat = -1
+    @State private var beam: CGFloat = -0.1
     @State private var pulse: Double = 0
-    @State private var spin: Double = 0
+    @State private var tokenPhase: Double = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
-            if let image {
-                Color.black.opacity(0.45)
-                    .overlay {
-                        Image(uiImage: image)
-                            .resizable().aspectRatio(contentMode: .fill)
-                            .allowsHitTesting(false)
-                    }
-                    .clipShape(.rect(cornerRadius: 16))
-                    .overlay { scanGrid }
-                    .overlay {
-                        // Detection chips appearing one after another
-                        VStack {
-                            HStack {
-                                detectionChip(label: "FOODS", x: 0.10, y: 0.18)
-                                Spacer()
-                            }
-                            Spacer()
-                            HStack {
-                                Spacer()
-                                detectionChip(label: "PORTION", x: 0.78, y: 0.78)
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            ZStack {
+                // Outer pulse rings (concentric)
+                ForEach(0..<3) { i in
+                    Circle()
+                        .strokeBorder(Theme.accentGlow.opacity(0.30), lineWidth: 1)
+                        .scaleEffect(0.62 + pulse * (0.42 + Double(i) * 0.10))
+                        .opacity(max(0, 1 - pulse) * 0.6)
+                }
+
+                // Counter-rotating arcs to mirror the PSL/Physique animations
+                ForEach(0..<2) { i in
+                    let dir: Double = i % 2 == 0 ? 1 : -1
+                    Circle()
+                        .trim(from: 0, to: i == 0 ? 0.32 : 0.20)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.clear, Theme.accentGlow, Theme.accent.opacity(0.9)],
+                                startPoint: .leading, endPoint: .trailing
+                            ),
+                            style: .init(lineWidth: i == 0 ? 1.4 : 0.9, lineCap: .round)
+                        )
+                        .frame(width: size * (0.82 + Double(i) * 0.08),
+                               height: size * (0.82 + Double(i) * 0.08))
+                        .rotationEffect(.degrees(rotation * dir * (1 + Double(i) * 0.4)))
+                }
+
+                // Glass plate holding the photo
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(Theme.surface)
+                        .overlay {
+                            if let image {
+                                Image(uiImage: image)
+                                    .resizable().aspectRatio(contentMode: .fill)
+                                    .allowsHitTesting(false)
+                            } else {
+                                LinearGradient(colors: [Theme.surface, Theme.bg],
+                                               startPoint: .top, endPoint: .bottom)
+                                .overlay(
+                                    Image(systemName: "flame.fill")
+                                        .font(.system(size: size * 0.18, weight: .bold))
+                                        .foregroundStyle(Theme.accentGlow.opacity(0.9))
+                                )
                             }
                         }
-                        .padding(10)
-                    }
-                    .clipShape(.rect(cornerRadius: 16))
-            } else {
-                ZStack {
-                    Circle()
-                        .strokeBorder(Theme.accentGlow.opacity(0.5), lineWidth: 1)
-                        .frame(width: 70, height: 70)
-                        .scaleEffect(1 + CGFloat(pulse) * 0.06)
-                    Image(systemName: "flame.fill")
-                        .font(.system(size: 26, weight: .bold))
-                        .foregroundStyle(Theme.accentGlow)
-                        .rotationEffect(.degrees(spin * 0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .overlay(hexLattice.opacity(0.55))
+                        .overlay(
+                            // diagonal shimmer pass
+                            GeometryReader { g in
+                                LinearGradient(
+                                    colors: [.clear, Color.white.opacity(0.32), .clear],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
+                                .frame(width: g.size.width * 0.55)
+                                .offset(x: g.size.width * shimmer)
+                                .blendMode(.plusLighter)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .allowsHitTesting(false)
+                        )
+                        .overlay(
+                            // soft horizontal scan beam
+                            GeometryReader { g in
+                                LinearGradient(
+                                    colors: [.clear, Theme.accentGlow.opacity(0.75), .clear],
+                                    startPoint: .top, endPoint: .bottom
+                                )
+                                .frame(height: g.size.height * 0.18)
+                                .offset(y: g.size.height * beam - g.size.height * 0.09)
+                                .blendMode(.plusLighter)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .allowsHitTesting(false)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18).strokeBorder(
+                                LinearGradient(
+                                    colors: [Theme.accentGlow.opacity(0.9), Theme.accent.opacity(0.35)],
+                                    startPoint: .top, endPoint: .bottom
+                                ),
+                                lineWidth: 1.2
+                            )
+                        )
+                        .shadow(color: Theme.accent.opacity(0.3), radius: 16)
+                }
+                .frame(width: size * 0.66, height: size * 0.66)
+
+                // Three orbiting macro tokens (P / C / F)
+                ForEach(Array(macroTokens.enumerated()), id: \.offset) { i, token in
+                    let angle = Double(i) / Double(macroTokens.count) * 360 + tokenPhase
+                    let radius = size * 0.44
+                    macroToken(letter: token.letter, tint: token.tint)
+                        .offset(
+                            x: cos(angle * .pi / 180) * radius,
+                            y: sin(angle * .pi / 180) * radius
+                        )
                 }
             }
+            .frame(width: size, height: size)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             guard !reduceMotion else { return }
-            withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
-                sweep = 1.2
+            withAnimation(.linear(duration: 11).repeatForever(autoreverses: false)) {
+                rotation = 360
             }
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+            withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: false)) {
+                shimmer = 1
+            }
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                beam = 1.0
+            }
+            withAnimation(.easeOut(duration: 2.0).repeatForever(autoreverses: false)) {
                 pulse = 1
             }
-            withAnimation(.linear(duration: 10).repeatForever(autoreverses: false)) {
-                spin = 360
+            withAnimation(.linear(duration: 14).repeatForever(autoreverses: false)) {
+                tokenPhase = 360
             }
         }
     }
 
-    private var scanGrid: some View {
-        GeometryReader { geo in
-            ZStack {
-                // Subtle grid
-                Canvas { ctx, size in
-                    let step: CGFloat = 24
-                    var x: CGFloat = 0
-                    while x < size.width {
-                        var p = Path()
-                        p.move(to: CGPoint(x: x, y: 0))
-                        p.addLine(to: CGPoint(x: x, y: size.height))
-                        ctx.stroke(p, with: .color(Theme.accentGlow.opacity(0.18)), lineWidth: 0.5)
-                        x += step
+    private var macroTokens: [(letter: String, tint: Color)] {
+        [("P", Theme.elite), ("C", Theme.accentGlow), ("F", Theme.warn)]
+    }
+
+    private func macroToken(letter: String, tint: Color) -> some View {
+        ZStack {
+            Circle().fill(Color.black.opacity(0.65))
+            Circle().strokeBorder(tint.opacity(0.8), lineWidth: 1)
+            Text(letter)
+                .font(.system(size: 10, weight: .heavy)).tracking(0.5)
+                .foregroundStyle(tint)
+        }
+        .frame(width: 22, height: 22)
+        .shadow(color: tint.opacity(0.6), radius: 5)
+    }
+
+    /// Subtle hexagonal detection lattice over the meal photo.
+    private var hexLattice: some View {
+        Canvas { ctx, size in
+            let r: CGFloat = 14
+            let dx = r * 1.5
+            let dy = r * sqrt(3.0)
+            var row = 0
+            var y: CGFloat = -dy
+            while y < size.height + dy {
+                let offsetX: CGFloat = (row % 2 == 0) ? 0 : dx / 2 * 1.0
+                var x: CGFloat = -dx + offsetX
+                while x < size.width + dx {
+                    var p = Path()
+                    for i in 0..<6 {
+                        let a = Double(i) * .pi / 3
+                        let px = x + cos(a) * r
+                        let py = y + sin(a) * r
+                        if i == 0 { p.move(to: CGPoint(x: px, y: py)) }
+                        else { p.addLine(to: CGPoint(x: px, y: py)) }
                     }
-                    var y: CGFloat = 0
-                    while y < size.height {
-                        var p = Path()
-                        p.move(to: CGPoint(x: 0, y: y))
-                        p.addLine(to: CGPoint(x: size.width, y: y))
-                        ctx.stroke(p, with: .color(Theme.accentGlow.opacity(0.18)), lineWidth: 0.5)
-                        y += step
-                    }
+                    p.closeSubpath()
+                    ctx.stroke(p, with: .color(Theme.accentGlow.opacity(0.22)), lineWidth: 0.5)
+                    x += dx * 1.5
                 }
-                // Sweep beam
-                LinearGradient(
-                    colors: [.clear, Theme.accentGlow.opacity(0.9), .clear],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(height: geo.size.height * 0.25)
-                .offset(y: geo.size.height * sweep)
-                .blendMode(.plusLighter)
-                .allowsHitTesting(false)
+                y += dy
+                row += 1
             }
         }
-    }
-
-    private func detectionChip(label: String, x: CGFloat, y: CGFloat) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(Theme.good).frame(width: 5, height: 5)
-                .shadow(color: Theme.good.opacity(0.8), radius: 4)
-            Text(label)
-                .font(.system(size: 9, weight: .bold)).tracking(1.2)
-                .foregroundStyle(Theme.textPrimary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Capsule().fill(Color.black.opacity(0.65)))
-        .overlay(Capsule().strokeBorder(Theme.accentGlow.opacity(0.6), lineWidth: 0.5))
-        .opacity(0.85 + 0.15 * pulse)
+        .allowsHitTesting(false)
     }
 }
 

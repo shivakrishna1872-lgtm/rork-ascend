@@ -89,28 +89,78 @@ extension UIImage {
     }
 }
 
-/// Friendly placeholder used when the device has no camera (e.g. the Rork cloud simulator).
+/// Friendly sheet used when the camera can't be opened — either because the
+/// hardware is missing (cloud simulator) or the user previously denied access.
 struct CameraUnavailableSheet: View {
+    enum Reason { case unavailable, denied }
+    var reason: Reason = .unavailable
     @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         ZStack {
             AmbientBackground().ignoresSafeArea()
             VStack(spacing: 18) {
                 Spacer()
-                Image(systemName: "camera.metering.unknown")
+                Image(systemName: reason == .denied ? "lock.shield" : "camera.metering.unknown")
                     .font(.system(size: 56, weight: .light))
                     .foregroundStyle(Theme.accentGlow)
                     .ambientFloat(amplitude: 3, duration: 3.4)
-                Text("Camera unavailable")
+                Text(reason == .denied ? "Camera access needed" : "Camera unavailable")
                     .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
-                Text("Install Ascend Life on your device via the Rork App to capture live photos. You can still upload from the library here.")
+                Text(reason == .denied
+                     ? "Enable camera access for Ascend Life in Settings to capture live photos. You can still upload from your library here."
+                     : "Install Ascend Life on your device via the Rork App to capture live photos. You can still upload from the library here.")
                     .font(.aetherBody).foregroundStyle(Theme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
                 Spacer()
-                PrimaryButton(title: "OK", icon: "checkmark") { dismiss() }
-                    .padding(.horizontal, 28).padding(.bottom, 24)
+                VStack(spacing: 10) {
+                    if reason == .denied {
+                        PrimaryButton(title: "Open Settings", icon: "gearshape") {
+                            CameraPermission.openSettings()
+                            dismiss()
+                        }
+                        GhostButton(title: "Not now", icon: "xmark") { dismiss() }
+                    } else {
+                        PrimaryButton(title: "OK", icon: "checkmark") { dismiss() }
+                    }
+                }
+                .padding(.horizontal, 28).padding(.bottom, 24)
             }
+        }
+    }
+}
+
+// MARK: - Reusable trigger
+
+/// Centralized helper that handles the four-way permission state machine for
+/// every "Take Photo" button across the app. Consumers wire up two state
+/// flags (camera + access-sheet) and an enum for which reason to show.
+struct CameraAccessTrigger {
+    var onAuthorized: () -> Void
+    var onDenied: () -> Void
+    var onUnavailable: () -> Void
+
+    @MainActor
+    func fire() {
+        let state = CameraPermission.currentState()
+        switch state {
+        case .ready:
+            onAuthorized()
+        case .needsRequest:
+            Task { @MainActor in
+                let resolved = await CameraPermission.request()
+                switch resolved {
+                case .ready: onAuthorized()
+                case .denied: onDenied()
+                case .unavailable: onUnavailable()
+                case .needsRequest: onDenied()
+                }
+            }
+        case .denied:
+            onDenied()
+        case .unavailable:
+            onUnavailable()
         }
     }
 }

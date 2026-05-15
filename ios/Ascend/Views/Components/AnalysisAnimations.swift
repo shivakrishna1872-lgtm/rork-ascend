@@ -118,7 +118,275 @@ struct FoodScanAnimation: View {
     }
 }
 
-// MARK: - Face mesh sweep — used during PSL analysis
+// MARK: - Iris Orbit Scan (PSL analysis)
+//
+// A premium replacement for the old face mesh: the photo sits inside a soft
+// glass orb. Three orbital arcs counter-rotate around it, a radial sonar
+// sweeps outward in pulses, and tiny landmark sparks orbit the perimeter.
+
+struct IrisOrbitScan: View {
+    let image: UIImage?
+    @State private var rotation: Double = 0
+    @State private var sonar: CGFloat = 0
+    @State private var shimmer: CGFloat = -1
+    @State private var sparkPhase: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geo in
+            let size = min(geo.size.width, geo.size.height)
+            ZStack {
+                // Outer sonar pulses
+                ForEach(0..<3) { i in
+                    Circle()
+                        .strokeBorder(Theme.accentGlow.opacity(0.35), lineWidth: 1)
+                        .scaleEffect(0.55 + sonar * (0.55 + Double(i) * 0.12))
+                        .opacity(max(0, 1 - sonar) * 0.7)
+                }
+
+                // Three orbital arcs (counter-rotating)
+                ForEach(0..<3) { i in
+                    let trim = i == 0 ? 0.35 : (i == 1 ? 0.22 : 0.18)
+                    let dir: Double = i % 2 == 0 ? 1 : -1
+                    Circle()
+                        .trim(from: 0, to: trim)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.clear, Theme.accentGlow, Theme.accent.opacity(0.9)],
+                                startPoint: .leading, endPoint: .trailing
+                            ),
+                            style: .init(lineWidth: i == 0 ? 1.6 : 1.0, lineCap: .round)
+                        )
+                        .frame(width: size * (0.78 + Double(i) * 0.08),
+                               height: size * (0.78 + Double(i) * 0.08))
+                        .rotationEffect(.degrees(rotation * dir * (1 + Double(i) * 0.35)))
+                        .blur(radius: i == 2 ? 0.6 : 0)
+                }
+
+                // Glass portrait orb
+                Circle()
+                    .fill(Theme.surface)
+                    .frame(width: size * 0.62, height: size * 0.62)
+                    .overlay {
+                        if let image {
+                            Image(uiImage: image)
+                                .resizable().aspectRatio(contentMode: .fill)
+                                .allowsHitTesting(false)
+                        } else {
+                            LinearGradient(colors: [Theme.surface, Theme.bg],
+                                           startPoint: .top, endPoint: .bottom)
+                        }
+                    }
+                    .clipShape(Circle())
+                    .overlay(
+                        // Diagonal shimmer band sweeping across the portrait
+                        GeometryReader { g in
+                            LinearGradient(
+                                colors: [.clear, Color.white.opacity(0.35), .clear],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            )
+                            .frame(width: g.size.width * 0.55)
+                            .offset(x: g.size.width * shimmer)
+                            .blendMode(.plusLighter)
+                        }
+                        .clipShape(Circle())
+                        .allowsHitTesting(false)
+                    )
+                    .overlay(
+                        Circle().strokeBorder(
+                            LinearGradient(
+                                colors: [Theme.accentGlow.opacity(0.9), Theme.accent.opacity(0.4)],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 1.2
+                        )
+                    )
+                    .shadow(color: Theme.accent.opacity(0.35), radius: 18)
+
+                // Orbiting landmark sparks
+                ForEach(0..<8) { i in
+                    let angle = Double(i) / 8.0 * 360 + sparkPhase
+                    let radius = size * 0.42
+                    Circle()
+                        .fill(Theme.accentGlow)
+                        .frame(width: 4, height: 4)
+                        .shadow(color: Theme.accentGlow.opacity(0.9), radius: 4)
+                        .offset(
+                            x: cos(angle * .pi / 180) * radius,
+                            y: sin(angle * .pi / 180) * radius
+                        )
+                        .opacity(0.55 + 0.45 * abs(sin(angle * .pi / 180)))
+                }
+            }
+            .frame(width: size, height: size)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
+            withAnimation(.easeOut(duration: 2.2).repeatForever(autoreverses: false)) {
+                sonar = 1
+            }
+            withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: false)) {
+                shimmer = 1
+            }
+            withAnimation(.linear(duration: 14).repeatForever(autoreverses: false)) {
+                sparkPhase = 360
+            }
+        }
+    }
+}
+
+// MARK: - Particle Body Scan (Physique analysis)
+//
+// A cloud of points that drifts and slowly resolves into a body silhouette.
+// A horizontal scan beam sweeps top-to-bottom with a soft afterglow, and a
+// vertical center axis pulses to suggest spinal alignment.
+
+struct ParticleBodyScan: View {
+    @State private var resolve: Double = 0
+    @State private var beam: CGFloat = -0.1
+    @State private var drift: Double = 0
+    @State private var axisPulse: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // Deterministic landmark grid — 16 anchor points roughly outlining a body.
+    private static let anchors: [CGPoint] = [
+        // Head + neck
+        CGPoint(x: 0.50, y: 0.06),
+        CGPoint(x: 0.50, y: 0.13),
+        // Shoulders
+        CGPoint(x: 0.32, y: 0.20),
+        CGPoint(x: 0.68, y: 0.20),
+        // Chest
+        CGPoint(x: 0.42, y: 0.30),
+        CGPoint(x: 0.58, y: 0.30),
+        // Elbows
+        CGPoint(x: 0.22, y: 0.36),
+        CGPoint(x: 0.78, y: 0.36),
+        // Waist
+        CGPoint(x: 0.44, y: 0.48),
+        CGPoint(x: 0.56, y: 0.48),
+        // Hips
+        CGPoint(x: 0.38, y: 0.58),
+        CGPoint(x: 0.62, y: 0.58),
+        // Knees
+        CGPoint(x: 0.40, y: 0.76),
+        CGPoint(x: 0.60, y: 0.76),
+        // Ankles
+        CGPoint(x: 0.42, y: 0.95),
+        CGPoint(x: 0.58, y: 0.95)
+    ]
+
+    private static let cloud: [(CGPoint, Double)] = {
+        var rng = SystemRandomNumberGenerator()
+        var out: [(CGPoint, Double)] = []
+        for _ in 0..<60 {
+            let x = Double.random(in: 0.15...0.85, using: &rng)
+            let y = Double.random(in: 0.05...0.98, using: &rng)
+            let phase = Double.random(in: 0..<(2 * .pi), using: &rng)
+            out.append((CGPoint(x: x, y: y), phase))
+        }
+        return out
+    }()
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width, h = size.height
+
+            // Vertical center axis (alignment guide)
+            let axisAlpha = 0.18 + 0.18 * (sin(axisPulse) * 0.5 + 0.5)
+            var axis = Path()
+            axis.move(to: CGPoint(x: w * 0.5, y: 0))
+            axis.addLine(to: CGPoint(x: w * 0.5, y: h))
+            ctx.stroke(axis, with: .color(Theme.accent.opacity(axisAlpha)), lineWidth: 0.6)
+
+            // Drifting noise cloud (low-opacity — the "unresolved" data)
+            for (p, phase) in Self.cloud {
+                let dx = sin(drift + phase) * 0.012
+                let dy = cos(drift * 0.8 + phase) * 0.010
+                let cx = (p.x + dx) * w
+                let cy = (p.y + dy) * h
+                let alpha = (1 - resolve) * 0.55
+                let r: CGFloat = 1.3
+                ctx.fill(
+                    Path(ellipseIn: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)),
+                    with: .color(Theme.accentGlow.opacity(alpha))
+                )
+            }
+
+            // Resolved landmark nodes + connecting bones (fade in with `resolve`)
+            let edges: [(Int, Int)] = [
+                (0,1),(1,2),(1,3),
+                (2,4),(3,5),(4,5),
+                (2,6),(3,7),
+                (4,8),(5,9),(8,9),
+                (8,10),(9,11),(10,11),
+                (10,12),(11,13),(12,14),(13,15)
+            ]
+            for (a, b) in edges {
+                let pa = Self.anchors[a]
+                let pb = Self.anchors[b]
+                var line = Path()
+                line.move(to: CGPoint(x: pa.x * w, y: pa.y * h))
+                line.addLine(to: CGPoint(x: pb.x * w, y: pb.y * h))
+                ctx.stroke(line, with: .color(Theme.accentGlow.opacity(resolve * 0.65)),
+                           lineWidth: 1.2)
+            }
+            for p in Self.anchors {
+                let cx = p.x * w, cy = p.y * h
+                let core: CGFloat = 2.4
+                ctx.fill(
+                    Path(ellipseIn: CGRect(x: cx - core, y: cy - core, width: core * 2, height: core * 2)),
+                    with: .color(Theme.accent.opacity(0.4 + 0.6 * resolve))
+                )
+                let halo: CGFloat = 5.2
+                ctx.stroke(
+                    Path(ellipseIn: CGRect(x: cx - halo, y: cy - halo, width: halo * 2, height: halo * 2)),
+                    with: .color(Theme.accentGlow.opacity(resolve * 0.45)),
+                    lineWidth: 0.6
+                )
+            }
+
+            // Horizontal scan beam with afterglow
+            let beamY = beam * h
+            let glowRect = CGRect(x: 0, y: beamY - 36, width: w, height: 72)
+            ctx.fill(
+                Path(glowRect),
+                with: .linearGradient(
+                    Gradient(colors: [
+                        Theme.accentGlow.opacity(0),
+                        Theme.accentGlow.opacity(0.35),
+                        Theme.accentGlow.opacity(0)
+                    ]),
+                    startPoint: CGPoint(x: 0, y: glowRect.minY),
+                    endPoint: CGPoint(x: 0, y: glowRect.maxY)
+                )
+            )
+            var beamPath = Path()
+            beamPath.move(to: CGPoint(x: 0, y: beamY))
+            beamPath.addLine(to: CGPoint(x: w, y: beamY))
+            ctx.stroke(beamPath, with: .color(Theme.accentGlow), lineWidth: 1.4)
+        }
+        .onAppear {
+            guard !reduceMotion else { resolve = 1; beam = 0.5; return }
+            withAnimation(.easeOut(duration: 2.4)) { resolve = 1 }
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                beam = 1.0
+            }
+            withAnimation(.linear(duration: 6).repeatForever(autoreverses: false)) {
+                drift = .pi * 2
+            }
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                axisPulse = .pi
+            }
+        }
+    }
+}
+
+// MARK: - Face mesh sweep — (legacy, kept for reference)
 //
 // Lays a soft triangular face mesh over the user's portrait and traces a
 // horizontal beam across it for an analytical, premium feel.

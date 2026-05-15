@@ -237,6 +237,7 @@ struct MealLogSheet: View {
     @State private var error: String?
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
+    @State private var showCameraDenied = false
 
     var body: some View {
         ScrollView {
@@ -278,8 +279,11 @@ struct MealLogSheet: View {
                 HStack(spacing: 10) {
                     Button {
                         Haptics.tap()
-                        if CameraSheet.isAvailable { showCamera = true }
-                        else { showCameraUnavailable = true }
+                        CameraAccessTrigger(
+                            onAuthorized: { showCamera = true },
+                            onDenied: { showCameraDenied = true },
+                            onUnavailable: { showCameraUnavailable = true }
+                        ).fire()
                     } label: {
                         HStack {
                             Image(systemName: "camera.fill")
@@ -349,7 +353,10 @@ struct MealLogSheet: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet()
+            CameraUnavailableSheet(reason: .unavailable)
+        }
+        .sheet(isPresented: $showCameraDenied) {
+            CameraUnavailableSheet(reason: .denied)
         }
     }
 

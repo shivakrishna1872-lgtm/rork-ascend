@@ -46,6 +46,7 @@ struct PhysiqueScanFlow: View {
     @State private var errorMsg: String?
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
+    @State private var showCameraDenied = false
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var priorScans: [PhysiqueScanRecord]
 
     var body: some View {
@@ -84,7 +85,10 @@ struct PhysiqueScanFlow: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet()
+            CameraUnavailableSheet(reason: .unavailable)
+        }
+        .sheet(isPresented: $showCameraDenied) {
+            CameraUnavailableSheet(reason: .denied)
         }
     }
 
@@ -175,8 +179,11 @@ struct PhysiqueScanFlow: View {
                     HStack(spacing: 10) {
                         Button {
                             Haptics.medium()
-                            if CameraSheet.isAvailable { showCamera = true }
-                            else { showCameraUnavailable = true }
+                            CameraAccessTrigger(
+                                onAuthorized: { showCamera = true },
+                                onDenied: { showCameraDenied = true },
+                                onUnavailable: { showCameraUnavailable = true }
+                            ).fire()
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "camera.fill").font(.system(size: 15, weight: .bold))
@@ -314,17 +321,15 @@ struct PhysiqueScanFlow: View {
         VStack(spacing: 26) {
             Spacer()
             ZStack {
-                ForEach(0..<3) { i in
-                    Circle()
-                        .strokeBorder(Theme.accent.opacity(0.45 - Double(i) * 0.12), lineWidth: 1)
-                        .frame(width: 200 + CGFloat(i) * 56, height: 200 + CGFloat(i) * 56)
-                        .scaleEffect(1 + CGFloat(sin(analyzingPhase + Double(i))) * 0.04)
-                }
-                SkeletonTrace()
-                    .frame(width: 200, height: 280)
-                MeshScanAnimation(phase: analyzingPhase)
-                    .frame(width: 220, height: 280)
-                    .opacity(0.55)
+                // Soft halo behind the particle body
+                RadialGradient(
+                    colors: [Theme.accent.opacity(0.35), .clear],
+                    center: .center, startRadius: 10, endRadius: 220
+                )
+                .frame(width: 360, height: 420)
+                .blur(radius: 12)
+                ParticleBodyScan()
+                    .frame(width: 260, height: 360)
             }
             VStack(spacing: 6) {
                 Text(currentAnalyzingLabel.uppercased())

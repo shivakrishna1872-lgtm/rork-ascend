@@ -212,6 +212,7 @@ struct FaceScanSheet: View {
     @State private var revealStep: Int = 0
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
+    @State private var showCameraDenied = false
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFaces: [FaceScanRecord]
 
     private let minPhotos = 3
@@ -288,7 +289,10 @@ struct FaceScanSheet: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet()
+            CameraUnavailableSheet(reason: .unavailable)
+        }
+        .sheet(isPresented: $showCameraDenied) {
+            CameraUnavailableSheet(reason: .denied)
         }
     }
 
@@ -329,8 +333,11 @@ struct FaceScanSheet: View {
                 HStack(spacing: 10) {
                     Button {
                         Haptics.tap()
-                        if CameraSheet.isAvailable { showCamera = true }
-                        else { showCameraUnavailable = true }
+                        CameraAccessTrigger(
+                            onAuthorized: { showCamera = true },
+                            onDenied: { showCameraDenied = true },
+                            onUnavailable: { showCameraUnavailable = true }
+                        ).fire()
                     } label: {
                         HStack {
                             Image(systemName: "camera.fill")
@@ -449,19 +456,8 @@ struct FaceScanSheet: View {
     private var analyzingView: some View {
         VStack(spacing: 24) {
             Spacer()
-            ZStack {
-                ForEach(0..<3) { i in
-                    Circle()
-                        .strokeBorder(Theme.accent.opacity(0.45 - Double(i) * 0.12), lineWidth: 1)
-                        .frame(width: 220 + CGFloat(i) * 56, height: 220 + CGFloat(i) * 56)
-                        .scaleEffect(1 + CGFloat(sin(phase + Double(i))) * 0.04)
-                }
-                FaceMeshSweep(image: images.first)
-                    .frame(width: 200, height: 240)
-                    .clipShape(.rect(cornerRadius: 24))
-                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
-                    .shadow(color: Theme.accent.opacity(0.4), radius: 18)
-            }
+            IrisOrbitScan(image: images.first)
+                .frame(width: 320, height: 320)
             VStack(spacing: 6) {
                 Text(analyzingLabel.uppercased())
                     .font(.system(size: 11, weight: .semibold)).tracking(2.5)

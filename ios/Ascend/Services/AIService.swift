@@ -91,8 +91,17 @@ nonisolated struct AIService {
 
     func analyzePhysique(front: UIImage, side: UIImage, back: UIImage, profile: ProfileSnapshot, history: ScoreHistory? = nil) async throws -> PhysiqueAnalysis {
         let anchorLine: String = {
-            guard let h = history, !h.isEmpty else { return "(no prior scans — first analysis)" }
-            return "Prior rolling-average scores to anchor against (only deviate when clearly justified by the photos): " + h.summary
+            guard let h = history, !h.isEmpty else { return "PERSONAL CALIBRATION: (none — first analysis; rely on photos only)" }
+            return """
+            PERSONAL CALIBRATION DATA (the model self-trains from this user's prior scans — trust it):
+            \(h.summary)
+            
+            How to use it:
+            - The mean ± std is this user's learned baseline. Stay WITHIN ±1 std unless the new photos clearly justify movement.
+            - Low std on a metric → high confidence in that baseline → do NOT swing it by more than 2-3 points.
+            - High std on a metric → noisier history → you may correct more, but stay anchored to the mean.
+            - Honor the recent trend direction — do not flip the sign without strong visual evidence.
+            """
         }()
         let prompt = """
         You are Ascend Life, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(Int(profile.heightCm))cm, \(Int(profile.weightKg))kg.
@@ -143,8 +152,17 @@ nonisolated struct AIService {
             """
         }()
         let anchorLine: String = {
-            guard let h = history, !h.isEmpty else { return "(no prior scans — first analysis)" }
-            return "Prior rolling-average PSL scores to anchor against (deviate only when clearly justified): " + h.summary
+            guard let h = history, !h.isEmpty else { return "PERSONAL CALIBRATION: (none — first analysis; rely on photos + on-device measurements only)" }
+            return """
+            PERSONAL CALIBRATION DATA (the model self-trains from this user's prior scans — trust it):
+            \(h.summary)
+            
+            How to use it:
+            - Mean ± std is this user's learned PSL baseline. Stay WITHIN ±1 std unless the new photos demand it.
+            - Low std → confident baseline → cap movement at 2-3 points.
+            - High std → noisier; you may correct more, but stay anchored to the mean.
+            - Preserve the recent trend direction unless clearly contradicted.
+            """
         }()
 
         let prompt = """

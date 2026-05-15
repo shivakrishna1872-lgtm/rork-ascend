@@ -187,12 +187,32 @@ enum PhysiqueSmoothing {
     }
 
     static func history(from records: [PhysiqueScanRecord]) -> ScoreHistory {
-        let recent = Array(records.prefix(5))
+        let recent = Array(records.prefix(8))
         guard !recent.isEmpty else { return .none }
-        func avg(_ key: (PhysiqueScanRecord) -> Double) -> Int {
-            Int((recent.map(key).reduce(0, +) / Double(recent.count)).rounded())
+        func avg(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / Double(recent.count)
         }
-        let s = "physique \(avg(\.physiqueScore)), symmetry \(avg(\.symmetryScore)), muscularity \(avg(\.muscularityScore)), conditioning \(avg(\.conditioningScore)), v-taper \(avg(\.vTaperScore)), bf \(avg(\.bodyFatPercent))%"
+        func std(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
+            return sqrt(v)
+        }
+        // Trend: oldest → newest delta on physique score (records are newest-first).
+        let trend: Double = {
+            guard recent.count >= 2,
+                  let oldest = recent.last, let newest = recent.first else { return 0 }
+            return newest.physiqueScore - oldest.physiqueScore
+        }()
+        let s = """
+        n=\(recent.count) prior scans — personal baseline (rolling mean ± std):
+        physique \(Int(avg(\.physiqueScore).rounded()))±\(Int(std(\.physiqueScore).rounded())), \
+        symmetry \(Int(avg(\.symmetryScore).rounded()))±\(Int(std(\.symmetryScore).rounded())), \
+        muscle \(Int(avg(\.muscularityScore).rounded()))±\(Int(std(\.muscularityScore).rounded())), \
+        lean \(Int(avg(\.conditioningScore).rounded()))±\(Int(std(\.conditioningScore).rounded())), \
+        v-taper \(Int(avg(\.vTaperScore).rounded()))±\(Int(std(\.vTaperScore).rounded())), \
+        bf \(String(format: "%.1f", avg(\.bodyFatPercent)))±\(String(format: "%.1f", std(\.bodyFatPercent)))%; \
+        recent trend on physique: \(String(format: "%+.1f", trend))
+        """
         return ScoreHistory(summary: s, isEmpty: false)
     }
 
@@ -228,12 +248,31 @@ enum FaceSmoothing {
     }
 
     static func history(from records: [FaceScanRecord]) -> ScoreHistory {
-        let recent = Array(records.prefix(5))
+        let recent = Array(records.prefix(8))
         guard !recent.isEmpty else { return .none }
-        func avg(_ key: (FaceScanRecord) -> Double) -> Int {
-            Int((recent.map(key).reduce(0, +) / Double(recent.count)).rounded())
+        func avg(_ key: (FaceScanRecord) -> Double) -> Double {
+            recent.map(key).reduce(0, +) / Double(recent.count)
         }
-        let s = "overall \(avg(\.overallScore)), symmetry \(avg(\.symmetry)), jawline \(avg(\.jawline)), thirds \(avg(\.thirds)), canthal \(avg(\.canthalTilt)), eye-spacing \(avg(\.eyeSpacing))"
+        func std(_ key: (FaceScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
+            return sqrt(v)
+        }
+        let trend: Double = {
+            guard recent.count >= 2,
+                  let oldest = recent.last, let newest = recent.first else { return 0 }
+            return newest.overallScore - oldest.overallScore
+        }()
+        let s = """
+        n=\(recent.count) prior scans — personal baseline (rolling mean ± std):
+        overall \(Int(avg(\.overallScore).rounded()))±\(Int(std(\.overallScore).rounded())), \
+        symmetry \(Int(avg(\.symmetry).rounded()))±\(Int(std(\.symmetry).rounded())), \
+        jawline \(Int(avg(\.jawline).rounded()))±\(Int(std(\.jawline).rounded())), \
+        thirds \(Int(avg(\.thirds).rounded()))±\(Int(std(\.thirds).rounded())), \
+        canthal \(Int(avg(\.canthalTilt).rounded()))±\(Int(std(\.canthalTilt).rounded())), \
+        eye-spacing \(Int(avg(\.eyeSpacing).rounded()))±\(Int(std(\.eyeSpacing).rounded())); \
+        recent trend on overall: \(String(format: "%+.1f", trend))
+        """
         return ScoreHistory(summary: s, isEmpty: false)
     }
 }

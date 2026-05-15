@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import UserNotifications
+import UIKit
 
 struct ProfileView: View {
     let user: UserProfile
@@ -8,6 +10,9 @@ struct ProfileView: View {
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var scans: [PhysiqueScanRecord]
     @Query(sort: \MealEntry.date, order: .reverse) private var meals: [MealEntry]
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var faces: [FaceScanRecord]
+
+    @State private var notifStatus: UNAuthorizationStatus = .notDetermined
+    @State private var rescheduleConfirmation: String? = nil
 
     var body: some View {
         ZStack {
@@ -18,13 +23,118 @@ struct ProfileView: View {
                     statsCard.blurFadeIn(delay: 0.10)
                     personalitySection.blurFadeIn(delay: 0.18)
                     accessibilitySection.blurFadeIn(delay: 0.24)
-                    aboutSection.blurFadeIn(delay: 0.30)
-                    resetButton.blurFadeIn(delay: 0.36)
+                    notificationsSection.blurFadeIn(delay: 0.30)
+                    aboutSection.blurFadeIn(delay: 0.36)
+                    resetButton.blurFadeIn(delay: 0.42)
                 }
                 .padding(.horizontal, 20).padding(.top, 18)
             }
             .scrollIndicators(.hidden)
             .safeAreaPadding(.bottom, 40)
+        }
+        .task { await refreshNotifStatus() }
+    }
+
+    private func refreshNotifStatus() async {
+        notifStatus = await NotificationService.shared.currentStatus
+    }
+
+    private var notificationsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Notifications")
+            VStack(spacing: 0) {
+                Toggle(isOn: Binding(
+                    get: { notifStatus == .authorized || notifStatus == .provisional },
+                    set: { v in handleToggle(enable: v) }
+                )) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Daily Reminders").font(.system(size: 15, weight: .medium))
+                            Text(notifSubtitle)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    } icon: {
+                        Image(systemName: "bell.fill").foregroundStyle(Theme.accent)
+                    }
+                }
+                .tint(Theme.accent)
+                .padding(.vertical, 8)
+
+                Divider().overlay(Theme.line)
+
+                Button {
+                    Haptics.tap()
+                    Task {
+                        let status = await NotificationService.shared.currentStatus
+                        if status == .authorized || status == .provisional {
+                            NotificationService.shared.scheduleDefaults()
+                            withAnimation(.spring) {
+                                rescheduleConfirmation = "Reminders rescheduled for 8:30 AM and 9:00 PM."
+                            }
+                            Haptics.success()
+                            try? await Task.sleep(for: .seconds(3))
+                            withAnimation(.spring) { rescheduleConfirmation = nil }
+                        } else {
+                            openSystemSettings()
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Label("Reschedule Reminders", systemImage: "arrow.clockwise")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Theme.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .glassCard(radius: 16)
+
+            if let msg = rescheduleConfirmation {
+                Text(msg)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.good)
+                    .padding(.horizontal, 4)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private var notifSubtitle: String {
+        switch notifStatus {
+        case .authorized, .provisional, .ephemeral: return "8:30 AM check-in · 9:00 PM nudge"
+        case .denied: return "Disabled in iOS Settings"
+        case .notDetermined: return "Tap to enable daily reminders"
+        @unknown default: return ""
+        }
+    }
+
+    private func handleToggle(enable: Bool) {
+        Haptics.tap()
+        Task {
+            if enable {
+                let status = await NotificationService.shared.currentStatus
+                if status == .denied {
+                    openSystemSettings()
+                } else {
+                    _ = await NotificationService.shared.requestAuthorization()
+                }
+            } else {
+                NotificationService.shared.cancelAll()
+            }
+            await refreshNotifStatus()
+        }
+    }
+
+    private func openSystemSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 

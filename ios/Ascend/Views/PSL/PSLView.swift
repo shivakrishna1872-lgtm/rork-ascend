@@ -541,19 +541,57 @@ struct FaceScanSheet: View {
     private func analyze(_ imgs: [UIImage]) async {
         analyzing = true
         do {
-            // 1) Run on-device MediaPipe-equivalent face landmark analysis on EVERY photo.
+            // 1) On-device face detection (Vision = MediaPipe-equivalent on iOS) on EVERY photo.
+            //    Only photos where a face is actually detected are eligible for scoring.
             var samples: [FaceMeasurements] = []
+            var faceImages: [UIImage] = []
             for img in imgs {
-                if let m = await PoseService.shared.analyzeFace(img) { samples.append(m) }
+                if let m = await PoseService.shared.analyzeFace(img) {
+                    samples.append(m)
+                    faceImages.append(img)
+                }
             }
+
+            // GUARD: no face found in any photo → return all zeros, never call the AI.
+            if samples.isEmpty {
+                try? await Task.sleep(for: .seconds(0.6))
+                let preview = imgs.first?.jpegData(compressionQuality: 0.7)
+                let zero = FaceScanRecord(
+                    overallScore: 0,
+                    symmetry: 0,
+                    jawline: 0,
+                    thirds: 0,
+                    canthalTilt: 0,
+                    eyeSpacing: 0,
+                    glowUpPotential: 0,
+                    recommendations: [
+                        "Use a clear, front-facing selfie where your full face is visible.",
+                        "Make sure your eyes, nose, and mouth are all in frame.",
+                        "Soft, even lighting on the face works best."
+                    ],
+                    hairstyles: [],
+                    insight: "No face detected in your photos — add a clear front-facing selfie to score.",
+                    imageData: preview
+                )
+                ctx.insert(zero)
+                try? ctx.save()
+                await MainActor.run {
+                    withAnimation(.smooth(duration: 0.5)) {
+                        self.result = zero
+                        self.analyzing = false
+                    }
+                }
+                return
+            }
+
             // 2) Trimmed-mean average so a bad-angle photo can't swing scores.
             let averaged = FaceMeasurements.averaged(samples)
             let consistency = FaceMeasurements.consistency(samples)
 
-            // 3) AI cross-references all images, anchored to the averaged measurements.
+            // 3) AI cross-references only the face-confirmed images, anchored to averaged measurements.
             let history = FaceSmoothing.history(from: priorFaces)
             let rawAnalysis = try await AIService.shared.analyzeFace(
-                images: imgs,
+                images: faceImages,
                 measurements: averaged,
                 sampleCount: samples.count,
                 consistency: consistency,

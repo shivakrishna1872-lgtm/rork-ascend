@@ -166,19 +166,44 @@ enum PhysiqueSmoothing {
                 recommendations: raw.recommendations
             )
         }
-        // 1 scan -> 0.60, 2 -> 0.50, 3 -> 0.42, 4+ -> 0.36
-        let newWeight = max(0.36, 0.7 - Double(n) * 0.08)
+        // Stronger default damping — heavily weight the rolling baseline.
+        // 1 scan -> 0.38, 2 -> 0.32, 3 -> 0.28, 4+ -> 0.22
+        let baseWeight = max(0.22, 0.46 - Double(n) * 0.06)
         let recent = Array(priors.prefix(5))
         func avg(_ key: (PhysiqueScanRecord) -> Double) -> Double {
             recent.map(key).reduce(0, +) / Double(recent.count)
         }
+        func std(_ key: (PhysiqueScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
+            return sqrt(v)
+        }
+        // Breakthrough rule: if raw exceeds the rolling mean by more than max(1*std, 4 pts),
+        // it's a real improvement — bias toward the new reading.
+        func adapt(_ rawVal: Double, _ avgVal: Double, _ stdVal: Double, lowerIsBetter: Bool = false) -> Double {
+            let delta = lowerIsBetter ? (avgVal - rawVal) : (rawVal - avgVal)
+            let threshold = max(stdVal, 4.0)
+            if delta > threshold {
+                // Genuine breakthrough — accept up to 75% of the new reading.
+                let bonus = min(0.55, (delta - threshold) / 12.0)
+                return min(0.85, baseWeight + 0.20 + bonus)
+            }
+            return baseWeight
+        }
+        let wPhysique = adapt(raw.physiqueScore, avg(\.physiqueScore), std(\.physiqueScore))
+        let wSym = adapt(blendedSymmetry, avg(\.symmetryScore), std(\.symmetryScore))
+        let wMus = adapt(raw.muscularity, avg(\.muscularityScore), std(\.muscularityScore))
+        let wCon = adapt(raw.conditioning, avg(\.conditioningScore), std(\.conditioningScore))
+        let wVT = adapt(blendedVTaper, avg(\.vTaperScore), std(\.vTaperScore))
+        // For body fat, lower is the "improvement" direction.
+        let wBF = adapt(raw.bodyFatPercent, avg(\.bodyFatPercent), std(\.bodyFatPercent), lowerIsBetter: true)
         return PhysiqueAnalysis(
-            physiqueScore: blend(raw.physiqueScore, avg(\.physiqueScore), w: newWeight),
-            symmetry: blend(blendedSymmetry, avg(\.symmetryScore), w: newWeight),
-            muscularity: blend(raw.muscularity, avg(\.muscularityScore), w: newWeight),
-            conditioning: blend(raw.conditioning, avg(\.conditioningScore), w: newWeight),
-            vTaper: blend(blendedVTaper, avg(\.vTaperScore), w: newWeight),
-            bodyFatPercent: blend(raw.bodyFatPercent, avg(\.bodyFatPercent), w: newWeight),
+            physiqueScore: blend(raw.physiqueScore, avg(\.physiqueScore), w: wPhysique),
+            symmetry: blend(blendedSymmetry, avg(\.symmetryScore), w: wSym),
+            muscularity: blend(raw.muscularity, avg(\.muscularityScore), w: wMus),
+            conditioning: blend(raw.conditioning, avg(\.conditioningScore), w: wCon),
+            vTaper: blend(blendedVTaper, avg(\.vTaperScore), w: wVT),
+            bodyFatPercent: blend(raw.bodyFatPercent, avg(\.bodyFatPercent), w: wBF),
             bodyFatConfidence: raw.bodyFatConfidence,
             archetype: raw.archetype,
             insight: raw.insight,
@@ -247,22 +272,46 @@ enum FaceSmoothing {
     static func smooth(raw: FaceAnalysis, priors: [FaceScanRecord]) -> FaceAnalysis {
         let n = priors.count
         guard n > 0 else { return raw }
-        let newWeight = max(0.36, 0.7 - Double(n) * 0.08)
+        // Stronger default damping toward the rolling baseline.
+        // 1 scan -> 0.38, 2 -> 0.32, 3 -> 0.28, 4+ -> 0.22
+        let baseWeight = max(0.22, 0.46 - Double(n) * 0.06)
         let recent = Array(priors.prefix(5))
         func avg(_ key: (FaceScanRecord) -> Double) -> Double {
             recent.map(key).reduce(0, +) / Double(recent.count)
         }
-        func blend(_ a: Double, _ b: Double) -> Double {
-            max(0, min(100, a * newWeight + b * (1 - newWeight)))
+        func std(_ key: (FaceScanRecord) -> Double) -> Double {
+            let m = avg(key)
+            let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
+            return sqrt(v)
         }
+        // Breakthrough: real improvement (> max(std, 4pts)) above the rolling mean.
+        func adapt(_ rawVal: Double, _ avgVal: Double, _ stdVal: Double) -> Double {
+            let delta = rawVal - avgVal
+            let threshold = max(stdVal, 4.0)
+            if delta > threshold {
+                let bonus = min(0.55, (delta - threshold) / 12.0)
+                return min(0.85, baseWeight + 0.20 + bonus)
+            }
+            return baseWeight
+        }
+        func blend(_ a: Double, _ b: Double, _ w: Double) -> Double {
+            max(0, min(100, a * w + b * (1 - w)))
+        }
+        let wO = adapt(raw.overall, avg(\.overallScore), std(\.overallScore))
+        let wS = adapt(raw.symmetry, avg(\.symmetry), std(\.symmetry))
+        let wJ = adapt(raw.jawline, avg(\.jawline), std(\.jawline))
+        let wT = adapt(raw.thirds, avg(\.thirds), std(\.thirds))
+        let wC = adapt(raw.canthalTilt, avg(\.canthalTilt), std(\.canthalTilt))
+        let wE = adapt(raw.eyeSpacing, avg(\.eyeSpacing), std(\.eyeSpacing))
+        let wG = adapt(raw.glowUpPotential, avg(\.glowUpPotential), std(\.glowUpPotential))
         return FaceAnalysis(
-            overall: blend(raw.overall, avg(\.overallScore)),
-            symmetry: blend(raw.symmetry, avg(\.symmetry)),
-            jawline: blend(raw.jawline, avg(\.jawline)),
-            thirds: blend(raw.thirds, avg(\.thirds)),
-            canthalTilt: blend(raw.canthalTilt, avg(\.canthalTilt)),
-            eyeSpacing: blend(raw.eyeSpacing, avg(\.eyeSpacing)),
-            glowUpPotential: blend(raw.glowUpPotential, avg(\.glowUpPotential)),
+            overall: blend(raw.overall, avg(\.overallScore), wO),
+            symmetry: blend(raw.symmetry, avg(\.symmetry), wS),
+            jawline: blend(raw.jawline, avg(\.jawline), wJ),
+            thirds: blend(raw.thirds, avg(\.thirds), wT),
+            canthalTilt: blend(raw.canthalTilt, avg(\.canthalTilt), wC),
+            eyeSpacing: blend(raw.eyeSpacing, avg(\.eyeSpacing), wE),
+            glowUpPotential: blend(raw.glowUpPotential, avg(\.glowUpPotential), wG),
             insight: raw.insight,
             recommendations: raw.recommendations,
             hairstyles: raw.hairstyles

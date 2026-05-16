@@ -371,14 +371,51 @@ struct PhysiqueScanFlow: View {
         let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw)
         let history = PhysiqueSmoothing.history(from: priorScans)
         do {
-            // Run pose + AI in parallel
-            async let aiTask = AIService.shared.analyzePhysique(front: f, side: s, back: b, profile: snap, history: history)
+            // 1) On-device body detection (Vision = MediaPipe-equivalent on iOS) on EVERY photo.
+            //    Only photos where a body is actually detected count toward scoring.
             async let frontPose = PoseService.shared.analyze(f)
             async let sidePose = PoseService.shared.analyze(s)
             async let backPose = PoseService.shared.analyze(b)
-
-            let rawAnalysis = try await aiTask
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
+
+            // A pose counts as "body detected" only if Vision returned real landmarks.
+            let bodyDetected = poses.contains { ($0?.landmarks.isEmpty == false) || (($0?.confidenceAverage ?? 0) > 0.05) }
+
+            // GUARD: no body found in any photo → return all zeros, never call the AI.
+            if !bodyDetected {
+                try? await Task.sleep(for: .seconds(0.6))
+                let zero = PhysiqueScanRecord(
+                    physiqueScore: 0,
+                    symmetryScore: 0,
+                    muscularityScore: 0,
+                    conditioningScore: 0,
+                    vTaperScore: 0,
+                    bodyFatPercent: 0,
+                    bodyFatConfidence: 0,
+                    archetypeRaw: Archetype.balanced.rawValue,
+                    recommendations: [
+                        "Use photos that show your full or upper body in frame.",
+                        "Stand a few feet from the camera so your torso is visible.",
+                        "Soft, even lighting on the body works best."
+                    ],
+                    insight: "No body detected in your photos — add clearer shots showing your physique to score.",
+                    frontImageData: f.jpegData(compressionQuality: 0.7),
+                    sideImageData: s.jpegData(compressionQuality: 0.7),
+                    backImageData: b.jpegData(compressionQuality: 0.7)
+                )
+                ctx.insert(zero)
+                try? ctx.save()
+                await MainActor.run {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                        self.result = zero
+                        self.analyzing = false
+                    }
+                }
+                return
+            }
+
+            // 2) Body confirmed → run the AI analysis anchored to detected on-device measurements.
+            let rawAnalysis = try await AIService.shared.analyzePhysique(front: f, side: s, back: b, profile: snap, history: history)
 
             // --- Multi-angle averaging (MediaPipe-style) ---
             // Symmetry: trimmed-mean across every angle that detected a body.

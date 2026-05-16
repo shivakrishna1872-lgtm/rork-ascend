@@ -673,81 +673,102 @@ struct PhysiqueView: View {
 
     private struct RadarChartView: View {
         let metrics: [(String, Double)]
+
         var body: some View {
             GeometryReader { geo in
                 let size = min(geo.size.width, geo.size.height)
                 let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
                 let radius = size / 2 - 18
-                let count = metrics.count
                 ZStack {
-                    // Concentric grid
-                    ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { f in
-                        Path { p in
-                            for i in 0..<count {
-                                let a = angle(for: i)
-                                let pt = CGPoint(x: center.x + cos(a) * radius * f,
-                                                 y: center.y + sin(a) * radius * f)
-                                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                            }
-                            p.closeSubpath()
-                        }
-                        .stroke(Theme.line, lineWidth: 0.5)
-                    }
-                    // Spokes
-                    ForEach(0..<count, id: \.self) { i in
-                        let a = angle(for: i)
-                        Path { p in
-                            p.move(to: center)
-                            p.addLine(to: CGPoint(x: center.x + cos(a) * radius,
-                                                  y: center.y + sin(a) * radius))
-                        }
-                        .stroke(Theme.line.opacity(0.5), lineWidth: 0.5)
-                    }
-                    // Filled polygon
-                    Path { p in
-                        for i in 0..<count {
-                            let a = angle(for: i)
-                            let v = max(0, min(100, metrics[i].1)) / 100
-                            let pt = CGPoint(x: center.x + cos(a) * radius * v,
-                                             y: center.y + sin(a) * radius * v)
-                            if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                        }
-                        p.closeSubpath()
-                    }
-                    .fill(Theme.accentGlow.opacity(0.25))
-                    Path { p in
-                        for i in 0..<count {
-                            let a = angle(for: i)
-                            let v = max(0, min(100, metrics[i].1)) / 100
-                            let pt = CGPoint(x: center.x + cos(a) * radius * v,
-                                             y: center.y + sin(a) * radius * v)
-                            if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                        }
-                        p.closeSubpath()
-                    }
-                    .stroke(Theme.accentGlow, lineWidth: 1.5)
-                    // Dots
-                    ForEach(0..<count, id: \.self) { i in
-                        let a = angle(for: i)
-                        let v = max(0, min(100, metrics[i].1)) / 100
-                        Circle().fill(Theme.accentGlow)
-                            .frame(width: 6, height: 6)
-                            .position(x: center.x + cos(a) * radius * v,
-                                      y: center.y + sin(a) * radius * v)
-                    }
-                    // Labels
-                    ForEach(0..<count, id: \.self) { i in
-                        let a = angle(for: i)
-                        let lr = radius + 14
-                        Text(metrics[i].0)
-                            .font(.system(size: 9, weight: .bold)).tracking(1.2)
-                            .foregroundStyle(Theme.textSecondary)
-                            .position(x: center.x + cos(a) * lr,
-                                      y: center.y + sin(a) * lr)
-                    }
+                    gridLayer(center: center, radius: radius)
+                    spokesLayer(center: center, radius: radius)
+                    polygonFill(center: center, radius: radius)
+                    polygonStroke(center: center, radius: radius)
+                    dotsLayer(center: center, radius: radius)
+                    labelsLayer(center: center, radius: radius)
                 }
             }
         }
+
+        private func point(at i: Int, center: CGPoint, radius: CGFloat, scale: CGFloat) -> CGPoint {
+            let a = angle(for: i)
+            return CGPoint(x: center.x + CGFloat(cos(a)) * radius * scale,
+                           y: center.y + CGFloat(sin(a)) * radius * scale)
+        }
+
+        @ViewBuilder
+        private func gridLayer(center: CGPoint, radius: CGFloat) -> some View {
+            let count = metrics.count
+            ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { f in
+                Path { p in
+                    for i in 0..<count {
+                        let pt = point(at: i, center: center, radius: radius, scale: CGFloat(f))
+                        if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+                    }
+                    p.closeSubpath()
+                }
+                .stroke(Theme.line, lineWidth: 0.5)
+            }
+        }
+
+        @ViewBuilder
+        private func spokesLayer(center: CGPoint, radius: CGFloat) -> some View {
+            let count = metrics.count
+            ForEach(0..<count, id: \.self) { i in
+                Path { p in
+                    p.move(to: center)
+                    p.addLine(to: point(at: i, center: center, radius: radius, scale: 1))
+                }
+                .stroke(Theme.line.opacity(0.5), lineWidth: 0.5)
+            }
+        }
+
+        private func polygonPath(center: CGPoint, radius: CGFloat) -> Path {
+            Path { p in
+                let count = metrics.count
+                for i in 0..<count {
+                    let v = CGFloat(max(0, min(100, metrics[i].1)) / 100)
+                    let pt = point(at: i, center: center, radius: radius, scale: v)
+                    if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+                }
+                p.closeSubpath()
+            }
+        }
+
+        private func polygonFill(center: CGPoint, radius: CGFloat) -> some View {
+            polygonPath(center: center, radius: radius)
+                .fill(Theme.accentGlow.opacity(0.25))
+        }
+
+        private func polygonStroke(center: CGPoint, radius: CGFloat) -> some View {
+            polygonPath(center: center, radius: radius)
+                .stroke(Theme.accentGlow, lineWidth: 1.5)
+        }
+
+        @ViewBuilder
+        private func dotsLayer(center: CGPoint, radius: CGFloat) -> some View {
+            let count = metrics.count
+            ForEach(0..<count, id: \.self) { i in
+                let v = CGFloat(max(0, min(100, metrics[i].1)) / 100)
+                let pt = point(at: i, center: center, radius: radius, scale: v)
+                Circle().fill(Theme.accentGlow)
+                    .frame(width: 6, height: 6)
+                    .position(x: pt.x, y: pt.y)
+            }
+        }
+
+        @ViewBuilder
+        private func labelsLayer(center: CGPoint, radius: CGFloat) -> some View {
+            let count = metrics.count
+            ForEach(0..<count, id: \.self) { i in
+                let pt = point(at: i, center: center, radius: radius + 14, scale: 1)
+                Text(metrics[i].0)
+                    .font(.system(size: 9, weight: .bold)).tracking(1.2)
+                    .foregroundStyle(Theme.textSecondary)
+                    .position(x: pt.x, y: pt.y)
+            }
+        }
+
         private func angle(for i: Int) -> Double {
             -.pi / 2 + (2 * .pi / Double(metrics.count)) * Double(i)
         }

@@ -94,6 +94,9 @@ extension UIImage {
 struct CameraUnavailableSheet: View {
     enum Reason { case unavailable, denied }
     var reason: Reason = .unavailable
+    /// Optional callback wired by the host screen to open its photo picker once
+    /// the user dismisses the sheet, so the unavailable state isn't a dead end.
+    var onUseLibrary: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -101,15 +104,16 @@ struct CameraUnavailableSheet: View {
             AmbientBackground().ignoresSafeArea()
             VStack(spacing: 18) {
                 Spacer()
-                Image(systemName: reason == .denied ? "lock.shield" : "camera.metering.unknown")
-                    .font(.system(size: 56, weight: .light))
+                Image(systemName: reason == .denied ? "lock.shield" : "iphone.gen3.badge.exclamationmark")
+                    .font(.system(size: 54, weight: .light))
                     .foregroundStyle(Theme.accentGlow)
                     .ambientFloat(amplitude: 3, duration: 3.4)
-                Text(reason == .denied ? "Camera access needed" : "Camera unavailable")
+                Text(reason == .denied ? "Camera access needed" : "Live camera unavailable here")
                     .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
+                    .multilineTextAlignment(.center)
                 Text(reason == .denied
                      ? "Enable camera access for Ascend Life in Settings to capture live photos. You can still upload from your library here."
-                     : "Install Ascend Life on your device via the Rork App to capture live photos. You can still upload from the library here.")
+                     : "You're previewing Ascend Life on the cloud simulator, which has no camera hardware. Install the build on your iPhone (via the Rork app or TestFlight) to take photos live — or upload one from your library now.")
                     .font(.aetherBody).foregroundStyle(Theme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
@@ -120,9 +124,24 @@ struct CameraUnavailableSheet: View {
                             CameraPermission.openSettings()
                             dismiss()
                         }
-                        GhostButton(title: "Not now", icon: "xmark") { dismiss() }
+                        if onUseLibrary != nil {
+                            GhostButton(title: "Upload from Library", icon: "photo.on.rectangle.angled") {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { onUseLibrary?() }
+                            }
+                        } else {
+                            GhostButton(title: "Not now", icon: "xmark") { dismiss() }
+                        }
                     } else {
-                        PrimaryButton(title: "OK", icon: "checkmark") { dismiss() }
+                        if onUseLibrary != nil {
+                            PrimaryButton(title: "Upload from Library", icon: "photo.on.rectangle.angled") {
+                                dismiss()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { onUseLibrary?() }
+                            }
+                            GhostButton(title: "Got it", icon: "checkmark") { dismiss() }
+                        } else {
+                            PrimaryButton(title: "OK", icon: "checkmark") { dismiss() }
+                        }
                     }
                 }
                 .padding(.horizontal, 28).padding(.bottom, 24)

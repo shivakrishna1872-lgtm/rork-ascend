@@ -238,6 +238,7 @@ struct MealLogSheet: View {
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
     @State private var showCameraDenied = false
+    @State private var showLibraryPicker = false
 
     var body: some View {
         ScrollView {
@@ -353,11 +354,12 @@ struct MealLogSheet: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet(reason: .unavailable)
+            CameraUnavailableSheet(reason: .unavailable, onUseLibrary: { showLibraryPicker = true })
         }
         .sheet(isPresented: $showCameraDenied) {
-            CameraUnavailableSheet(reason: .denied)
+            CameraUnavailableSheet(reason: .denied, onUseLibrary: { showLibraryPicker = true })
         }
+        .photosPicker(isPresented: $showLibraryPicker, selection: $pickerItem, matching: .images)
     }
 
     private var canAnalyze: Bool {

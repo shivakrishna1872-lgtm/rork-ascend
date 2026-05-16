@@ -213,6 +213,7 @@ struct FaceScanSheet: View {
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
     @State private var showCameraDenied = false
+    @State private var showLibraryPicker = false
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFaces: [FaceScanRecord]
 
     private let minPhotos = 3
@@ -289,11 +290,12 @@ struct FaceScanSheet: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet(reason: .unavailable)
+            CameraUnavailableSheet(reason: .unavailable, onUseLibrary: { showLibraryPicker = true })
         }
         .sheet(isPresented: $showCameraDenied) {
-            CameraUnavailableSheet(reason: .denied)
+            CameraUnavailableSheet(reason: .denied, onUseLibrary: { showLibraryPicker = true })
         }
+        .photosPicker(isPresented: $showLibraryPicker, selection: $pickerItems, maxSelectionCount: maxPhotos, matching: .images)
     }
 
     private var topBar: some View {

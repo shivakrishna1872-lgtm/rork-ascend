@@ -47,6 +47,7 @@ struct PhysiqueScanFlow: View {
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
     @State private var showCameraDenied = false
+    @State private var showLibraryPicker = false
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var priorScans: [PhysiqueScanRecord]
 
     var body: some View {
@@ -85,11 +86,12 @@ struct PhysiqueScanFlow: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $showCameraUnavailable) {
-            CameraUnavailableSheet(reason: .unavailable)
+            CameraUnavailableSheet(reason: .unavailable, onUseLibrary: { showLibraryPicker = true })
         }
         .sheet(isPresented: $showCameraDenied) {
-            CameraUnavailableSheet(reason: .denied)
+            CameraUnavailableSheet(reason: .denied, onUseLibrary: { showLibraryPicker = true })
         }
+        .photosPicker(isPresented: $showLibraryPicker, selection: $pickerItem, matching: .images, photoLibrary: .shared())
     }
 
     @MainActor

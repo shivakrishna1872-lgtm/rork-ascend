@@ -73,7 +73,14 @@ nonisolated enum AIServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingConfig: "AI service is not configured."
-        case .http(let c):   "AI request failed (\(c))."
+        case .http(let c):
+            switch c {
+            case 413: "Photos were too large to send. Try fewer or smaller photos."
+            case 408, 504: "The analysis timed out. Please try again."
+            case 429: "Too many requests right now. Please wait a moment and retry."
+            case 500...599: "The AI service is briefly unavailable. Please try again."
+            default: "AI request failed (\(c))."
+            }
         case .decode:        "Could not interpret AI response."
         case .empty:         "AI returned an empty response."
         }
@@ -276,25 +283,53 @@ nonisolated struct AIService {
     }
 
     private func callJSONVision<T: Decodable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
+        // Adaptive sizing: scale down if too many images so we stay well under server payload limits (413).
+        // Budget ~700KB per image of base64; aim for ~3.5MB total request body max.
+        let count = max(1, images.count)
+        let attempts: [(maxDim: CGFloat, quality: CGFloat)] = {
+            switch count {
+            case 1:    return [(1024, 0.75), (768, 0.6), (512, 0.5)]
+            case 2:    return [(900, 0.7),  (700, 0.55), (512, 0.45)]
+            case 3:    return [(800, 0.65), (640, 0.55), (480, 0.45)]
+            default:   return [(640, 0.6),  (512, 0.5),  (384, 0.4)]
+            }
+        }()
+
+        var lastError: Error = AIServiceError.empty
+        for attempt in attempts {
+            do {
+                let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
+                let body: [String: Any] = [
+                    "model": model,
+                    "temperature": 0.2,
+                    "messages": [
+                        ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
+                        ["role": "user", "content": parts]
+                    ]
+                ]
+                return try await postChat(body: body)
+            } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
+                lastError = AIServiceError.http(code)
+                continue // retry smaller
+            } catch {
+                throw error
+            }
+        }
+        throw lastError
+    }
+
+    private func buildVisionParts(prompt: String, images: [UIImage], maxDim: CGFloat, quality: CGFloat) -> [[String: Any]] {
         var parts: [[String: Any]] = [["type": "text", "text": prompt]]
         for img in images {
-            let resized = resize(img, maxDim: 1024)
-            guard let data = resized.jpegData(compressionQuality: 0.8) else { continue }
+            let resized = resize(img, maxDim: maxDim)
+            guard let data = resized.jpegData(compressionQuality: quality) else { continue }
             let b64 = data.base64EncodedString()
             parts.append([
                 "type": "image_url",
                 "image_url": ["url": "data:image/jpeg;base64,\(b64)"]
             ])
         }
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": 0.2,
-            "messages": [
-                ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
-                ["role": "user", "content": parts]
-            ]
-        ]
-        return try await postChat(body: body)
+        return parts
     }
 
     private func postChat<T: Decodable>(body: [String: Any]) async throws -> T {

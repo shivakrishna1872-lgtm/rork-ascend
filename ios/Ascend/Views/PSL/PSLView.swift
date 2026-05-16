@@ -321,7 +321,7 @@ struct FaceScanSheet: View {
                         .foregroundStyle(Theme.accentGlow)
                     Text("Multi-photo harmony")
                         .font(.aetherTitle).foregroundStyle(Theme.textPrimary)
-                    Text("Add \(minPhotos)–\(maxPhotos) front-facing photos. We average across all of them so your score stays stable across lighting and angles.")
+                    Text("Add \(minPhotos)–\(maxPhotos) photos of your face. Any casual selfie works — we average across them so the score stays stable.")
                         .font(.aetherBody).foregroundStyle(Theme.textSecondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)

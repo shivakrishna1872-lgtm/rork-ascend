@@ -108,14 +108,16 @@ nonisolated struct AIService {
 
         \(anchorLine)
 
-        ACCURACY RULES:
-        - Use visible anatomical evidence ONLY. Cross-reference all three views before committing to a score.
+        ACCURACY RULES (be GENEROUS about photo quality — never penalize for framing, lighting, distance, or angle):
+        - Treat ANY usable photo as normal input. Partial body, waist-up only, cropped legs, side-only, mirror selfies, casual lighting, phone camera angle — ALL acceptable. Do NOT lower scores because of photo quality.
+        - Score based on what is visible. If a region isn't shown, infer reasonably from visible regions and the user's BMI/weight/height — do NOT punish the user for it.
         - Anchor body-fat estimate using visible markers: abdominal definition, vascularity, waist taper, deltoid striations, glute-ham separation. Use the user's BMI (\(String(format: "%.1f", profile.weightKg / pow(profile.heightCm/100, 2)))) as a sanity check.
-        - Symmetry = compare LEFT vs RIGHT across shoulders, arms, lats, legs in the front + back views.
-        - V-taper = shoulder-to-waist ratio measured visually from the front view.
+        - Symmetry = compare LEFT vs RIGHT across whatever IS visible (shoulders, arms, lats, legs). Slight rotation/turn is fine.
+        - V-taper = shoulder-to-waist ratio from whichever view shows it best.
         - Muscularity = development relative to demographic norms for the user's sex/age/weight.
         - Conditioning = leanness + definition + separation.
-        - If a photo is partial (waist-up only, etc.) STILL produce a confident estimate from visible regions and slightly lower bodyFatConfidence.
+        - If a photo is partial, dim, blurry, or oddly angled, STILL produce a confident estimate. Lower bodyFatConfidence slightly (5-15 points) but keep the main scores stable.
+        - NEVER refuse to score, never return a placeholder, never tell the user to retake the photo.
 
         STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, angle, or partial framing.
 
@@ -172,14 +174,17 @@ nonisolated struct AIService {
 
         \(anchorLine)
 
-        ACCURACY RULES — base every score on geometry, not vibe:
-        - symmetry: derive primarily from the on-device symmetry_index. Penalize visible left/right deviation in eyes, brows, mouth corners, jaw.
-        - jawline: judge mandibular angle sharpness, gonial angle, chin projection, and submental definition. Lower scores for soft/recessed jaws; higher for defined angular jaws. Use jaw_ratio as an anchor (ideal 0.70-0.80).
+        ACCURACY RULES — base scores on what IS measurable; be GENEROUS about photo quality:
+        - Treat ANY usable selfie as normal input. Slight head turns, glasses, hats, beards, makeup, indoor/outdoor lighting, casual phone selfies — ALL acceptable. Do NOT lower scores because of photo quality, framing, or lighting.
+        - If a feature isn't clearly visible, estimate it from the on-device measurements and visible cues — do NOT penalize the user for it.
+        - symmetry: derive primarily from the on-device symmetry_index. Mild left/right deviation from head tilt or expression is normal — don't over-penalize.
+        - jawline: judge mandibular angle sharpness, gonial angle, chin projection, submental definition. Use jaw_ratio as an anchor (ideal 0.70-0.80). If hidden by beard/angle, estimate from visible cues.
         - thirds: lock to the thirds_balance measurement; perfect = each third near 33%.
-        - canthalTilt: positive degrees (upturned) score higher; neutral around 4°. Map canthal_tilt_deg → score (negative ≈ 40, 0° ≈ 60, +4° ≈ 80, +8°+ ≈ 95).
-        - eyeSpacing: ideal intercanthal ≈ one eye width (ratio ≈ 1.0). Penalize ratios <0.85 or >1.15.
+        - canthalTilt: positive degrees (upturned) score higher; neutral around 4°. Map canthal_tilt_deg → score (negative ≈ 45, 0° ≈ 62, +4° ≈ 80, +8°+ ≈ 95).
+        - eyeSpacing: ideal intercanthal ≈ one eye width (ratio ≈ 1.0). Mild deviation is fine.
         - overall: weighted blend of the five — symmetry 25%, jawline 25%, thirds 15%, canthalTilt 15%, eyeSpacing 10%, plus a 10% adjustment for skin/grooming/posture visible in the photo.
         - glowUpPotential: estimate realistic upside from grooming, body-fat reduction, sleep, posture, skincare. Higher when current overall is mid (50-70), lower when already high.
+        - NEVER refuse to score. NEVER return placeholder values. NEVER ask the user to retake the photo.
 
         MULTI-PHOTO AVERAGING: You are looking at \(images.count) photo(s) of the SAME person. Compute scores for each, then RETURN THE AVERAGE. Do not pick the best or worst photo. The symmetry score must be primarily driven by the on-device symmetry_index above (which is already averaged across all photos) so it stays stable across angles/lighting.
 

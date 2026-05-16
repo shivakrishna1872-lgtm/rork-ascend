@@ -13,9 +13,9 @@ enum ScanAngle: Int, CaseIterable {
     }
     var instruction: String {
         switch self {
-        case .front: "Face the camera in a relaxed pose. Full body or waist-up both work."
-        case .side:  "Turn roughly 90° and stand naturally. Partial framing is okay."
-        case .back:  "Turn so the camera sees your back. Arms relaxed; partial framing is fine."
+        case .front: "Face the camera. Any decent photo works — partial framing, casual lighting, all good."
+        case .side:  "Roughly side-on. Don't worry about being perfect — we handle the rest."
+        case .back:  "Turn so the camera sees your back. Whatever framing you can get is fine."
         }
     }
     var icon: String {
@@ -250,8 +250,8 @@ struct PhysiqueScanFlow: View {
 
     private var readyToCapture: Bool {
         guard let p = poseResult else { return false }
-        // Lenient: allow capture even with minor framing issues — the AI handles partial bodies.
-        return p.confidenceAverage > 0.20
+        // Ultra-lenient: any photo where a body is detected at all is good to go.
+        return p.confidenceAverage > 0.08 || !p.landmarks.isEmpty
     }
 
     private var instructionPanel: some View {
@@ -282,7 +282,7 @@ struct PhysiqueScanFlow: View {
                     .font(.aetherMono).foregroundStyle(Theme.accentGlow)
             }
             if pose.issues.isEmpty {
-                Label("Pose detected. Body fully visible.", systemImage: "checkmark.seal.fill")
+                Label("Looks great — any decent shot works.", systemImage: "checkmark.seal.fill")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.good)
             } else {

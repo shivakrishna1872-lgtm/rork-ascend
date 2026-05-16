@@ -125,15 +125,12 @@ nonisolated struct PoseService {
 
         let bright = brightness(cg: cg)
 
-        // Very lenient quality checks — only flag truly problematic captures.
-        // Users should be able to scan partial / waist-up framings without being blocked.
+        // Ultra-lenient quality checks — only flag completely broken captures.
+        // Partial bodies, off-center framing, and unusual lighting all pass.
         var issues: [String] = []
-        if confCount < 3 { issues.append("Body not detected — try a clearer photo") }
-        if bright < 0.06 { issues.append("Lighting is too dark") }
-        if bright > 0.98 { issues.append("Lighting is too bright") }
-        if abs(centerX - 0.5) > 0.42 { issues.append("Try to center your body in frame") }
-        // Allow partial body (waist-up, upper torso) — only flag when almost nothing is visible.
-        if coverageY < 0.18 { issues.append("Move closer so more of your body is visible") }
+        if confCount < 2 { issues.append("We couldn't see a body — any clearer shot works") }
+        if bright < 0.03 { issues.append("Photo looks pitch black — a bit more light helps") }
+        if bright > 0.99 { issues.append("Photo is fully blown out — try a softer light") }
 
         return PoseResult(
             landmarks: landmarks,

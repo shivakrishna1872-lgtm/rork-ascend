@@ -384,8 +384,15 @@ struct MealLogSheet: View {
 
     private func resultsView(_ r: MealAnalysis) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(r.name).font(.system(size: 17, weight: .semibold))
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(r.name).font(.system(size: 17, weight: .semibold))
+                    if !r.dishType.isEmpty {
+                        Text(r.dishType.uppercased())
+                            .font(.system(size: 9, weight: .bold)).tracking(1.3)
+                            .foregroundStyle(Theme.accentGlow)
+                    }
+                }
                 Spacer()
                 Text("\(r.calories) kcal").font(.aetherMono).foregroundStyle(Theme.accentGlow)
             }
@@ -399,6 +406,28 @@ struct MealLogSheet: View {
                 Text("\(r.confidence)% confidence")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
+            }
+            if !r.ingredients.isEmpty {
+                Divider().overlay(Theme.line)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Detected Ingredients".uppercased())
+                        .font(.system(size: 10, weight: .semibold)).tracking(1.5)
+                        .foregroundStyle(Theme.textTertiary)
+                    ForEach(r.ingredients, id: \.self) { ing in
+                        HStack(spacing: 8) {
+                            Circle().fill(Theme.accent.opacity(0.6)).frame(width: 4, height: 4)
+                            Text(ing.name)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Theme.textPrimary)
+                            Spacer()
+                            if !ing.portion.isEmpty {
+                                Text(ing.portion)
+                                    .font(.aetherMono)
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                        }
+                    }
+                }
             }
             if !r.note.isEmpty {
                 Text(r.note).font(.aetherBody).foregroundStyle(Theme.textSecondary)

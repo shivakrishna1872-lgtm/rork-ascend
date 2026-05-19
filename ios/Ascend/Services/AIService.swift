@@ -29,8 +29,27 @@ nonisolated struct FaceAnalysis: Codable {
     let hairstyles: [String]
 }
 
+nonisolated struct MealIngredient: Codable, Hashable {
+    let name: String
+    let portion: String
+
+    enum CodingKeys: String, CodingKey { case name, portion }
+
+    init(name: String, portion: String) {
+        self.name = name; self.portion = portion
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        self.portion = (try? c.decode(String.self, forKey: .portion)) ?? ""
+    }
+}
+
 nonisolated struct MealAnalysis: Codable {
     let name: String
+    let dishType: String
+    let ingredients: [MealIngredient]
     let calories: Int
     let proteinG: Int
     let carbsG: Int
@@ -39,11 +58,12 @@ nonisolated struct MealAnalysis: Codable {
     let note: String
 
     enum CodingKeys: String, CodingKey {
-        case name, calories, proteinG, carbsG, fatsG, confidence, note
+        case name, dishType, ingredients, calories, proteinG, carbsG, fatsG, confidence, note
     }
 
-    init(name: String, calories: Int, proteinG: Int, carbsG: Int, fatsG: Int, confidence: Int, note: String) {
-        self.name = name; self.calories = calories
+    init(name: String, dishType: String = "", ingredients: [MealIngredient] = [], calories: Int, proteinG: Int, carbsG: Int, fatsG: Int, confidence: Int, note: String) {
+        self.name = name; self.dishType = dishType; self.ingredients = ingredients
+        self.calories = calories
         self.proteinG = proteinG; self.carbsG = carbsG; self.fatsG = fatsG
         self.confidence = confidence; self.note = note
     }
@@ -51,6 +71,8 @@ nonisolated struct MealAnalysis: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.name = (try? c.decode(String.self, forKey: .name)) ?? "Meal"
+        self.dishType = (try? c.decode(String.self, forKey: .dishType)) ?? ""
+        self.ingredients = (try? c.decode([MealIngredient].self, forKey: .ingredients)) ?? []
         self.calories = max(0, min(4000, (try? c.decode(Int.self, forKey: .calories)) ?? 0))
         self.proteinG = max(0, min(300, (try? c.decode(Int.self, forKey: .proteinG)) ?? 0))
         self.carbsG   = max(0, min(500, (try? c.decode(Int.self, forKey: .carbsG)) ?? 0))
@@ -241,27 +263,42 @@ nonisolated struct AIService {
         }()
 
         let prompt = """
-        You are Ascend Life's nutrition vision coach. Identify the meal and estimate accurate macros.
+        You are Ascend Life's nutrition vision coach. Identify the meal in detail, then estimate accurate macros from the identified ingredients.
 
         \(descriptionLine)
 
-        Rules:
-        - If a photo is provided, look at it first: identify each visible food item, estimate portion sizes from plate / hand / utensil scale, then aggregate.
-        - Calories must equal protein*4 + carbs*4 + fats*9 within ±10%.
+        STEP 1 — IDENTIFY THE DISH (the WHAT):
+        - Name the dish (e.g. "Chicken burrito bowl", "Margherita pizza", "Caesar salad").
+        - Classify dishType into one of: bowl, plate, sandwich/wrap, pizza, salad, pasta, soup, dessert, drink, snack, other.
+
+        STEP 2 — IDENTIFY INGREDIENTS (the WHAT'S INSIDE):
+        - Even if the view is partial/covered (e.g. sauce on top, wrap closed, bowl mixed), INFER the likely ingredients from the dish type and visible cues.
+        - List every component you can reasonably identify with an estimated portion (e.g. "grilled chicken — 120 g", "white rice — 1 cup", "avocado — 1/4", "olive oil — 1 tbsp").
+        - Be thorough: hidden ingredients matter for macros (oil in cooking, dressing on salad, cheese under toppings, sugar in sauces).
+        - If something is genuinely ambiguous, pick the most common preparation and lower confidence accordingly.
+
+        STEP 3 — DERIVE MACROS FROM INGREDIENTS:
+        - Compute macros by summing each ingredient's contribution using standard USDA values for the stated portions.
+        - Calories MUST equal proteinG*4 + carbsG*4 + fatsG*9 within ±10%.
         - Use realistic single-serving portions unless the photo clearly shows more.
         - Return integers only.
-        - Lower the confidence if the photo is blurry, partial, or ambiguous; raise it if the meal is clearly visible.
-        - Never ask the user to clarify — always return a best estimate.
+
+        QUALITY:
+        - Lower confidence when the photo is blurry, partial, or the dish is ambiguous; raise it when ingredients are clearly visible.
+        - NEVER ask the user to clarify — always return a best estimate.
+        - NEVER refuse. Even from a description alone, identify likely ingredients and estimate.
 
         Return ONLY strict JSON:
         {
-          "name": short meal name (auto-generated from what you see),
+          "name": short dish name (max 4 words),
+          "dishType": one of ["bowl","plate","sandwich","pizza","salad","pasta","soup","dessert","drink","snack","other"],
+          "ingredients": [ {"name": "grilled chicken", "portion": "120 g"}, ... ],
           "calories": integer kcal,
           "proteinG": integer grams,
           "carbsG": integer grams,
           "fatsG": integer grams,
           "confidence": integer 0-100,
-          "note": one short nutritional insight
+          "note": one short nutritional insight (e.g. "High protein, moderate carbs — good post-workout choice")
         }
         Output JSON only.
         """

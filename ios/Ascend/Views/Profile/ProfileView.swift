@@ -15,6 +15,7 @@ struct ProfileView: View {
     @State private var rescheduleConfirmation: String? = nil
     @State private var showDeleteConfirm: Bool = false
     @State private var deleting: Bool = false
+    @State private var consent = AIConsentService.shared
 
     var body: some View {
         ZStack {
@@ -28,8 +29,9 @@ struct ProfileView: View {
                     accessibilitySection.blurFadeIn(delay: 0.24)
                     notificationsSection.blurFadeIn(delay: 0.30)
                     aboutSection.blurFadeIn(delay: 0.36)
-                    resetButton.blurFadeIn(delay: 0.42)
-                    deleteAccountSection.blurFadeIn(delay: 0.48)
+                    privacySection.blurFadeIn(delay: 0.40)
+                    resetButton.blurFadeIn(delay: 0.46)
+                    deleteAccountSection.blurFadeIn(delay: 0.52)
                 }
                 .padding(.horizontal, 20).padding(.top, 18)
             }
@@ -394,6 +396,53 @@ struct ProfileView: View {
             Text(label).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textSecondary)
             Spacer()
             Text(value).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+        }
+    }
+
+    // MARK: - Privacy (AI consent)
+
+    private var privacySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Privacy")
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.accentGlow)
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI Analysis").font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                        Text(consent.isAllowed
+                             ? "Photos and text are sent to the AI provider for scoring only."
+                             : (consent.hasDecided
+                                ? "Disabled — AI scoring is skipped until you enable it."
+                                : "You’ll be asked the first time AI is used."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: Binding(
+                        get: { consent.isAllowed },
+                        set: { v in
+                            Haptics.tap()
+                            if v { consent.allow() } else { consent.revoke() }
+                        }
+                    ))
+                    .labelsHidden()
+                    .tint(Theme.accent)
+                }
+                .padding(.vertical, 10)
+            }
+            .padding(.horizontal, 16)
+            .glassCard(radius: 16)
+
+            Text("Your photos and text are used only to power app features (scoring, recommendations). They are never used for advertising or tracking.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .padding(.horizontal, 4)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

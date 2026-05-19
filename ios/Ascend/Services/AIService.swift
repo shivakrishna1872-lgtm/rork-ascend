@@ -92,6 +92,7 @@ nonisolated enum AIServiceError: LocalizedError {
     case http(Int)
     case decode
     case empty
+    case consentDenied
     var errorDescription: String? {
         switch self {
         case .missingConfig: "AI service is not configured."
@@ -105,6 +106,7 @@ nonisolated enum AIServiceError: LocalizedError {
             }
         case .decode:        "Could not interpret AI response."
         case .empty:         "AI returned an empty response."
+        case .consentDenied: "AI analysis is turned off. Enable it in Profile → Privacy to score with AI."
         }
     }
 }
@@ -322,6 +324,7 @@ nonisolated struct AIService {
     // MARK: - HTTP
 
     private func callJSONText<T: Decodable>(prompt: String, as: T.Type) async throws -> T {
+        guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
         let body: [String: Any] = [
             "model": model,
             "temperature": 0.2,
@@ -334,6 +337,7 @@ nonisolated struct AIService {
     }
 
     private func callJSONVision<T: Decodable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
+        guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
         // Adaptive sizing: scale down if too many images so we stay well under server payload limits (413).
         // Budget ~700KB per image of base64; aim for ~3.5MB total request body max.
         let count = max(1, images.count)

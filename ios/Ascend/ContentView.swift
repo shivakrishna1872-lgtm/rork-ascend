@@ -5,6 +5,7 @@ struct RootView: View {
     @Environment(\.modelContext) private var ctx
     @Environment(AppState.self) private var app
     @Query private var users: [UserProfile]
+    @State private var consent = AIConsentService.shared
 
     var body: some View {
         ZStack {
@@ -29,6 +30,17 @@ struct RootView: View {
         }
         .animation(.smooth(duration: 0.5), value: users.first?.onboarded ?? false)
         .animation(.smooth(duration: 0.45), value: app.showTierPromotion)
+        .sheet(isPresented: Binding(
+            get: { consent.isPromptVisible },
+            set: { _ in /* dismissal is driven by allow()/deny(); interactive dismiss is disabled */ }
+        )) {
+            AIConsentSheet(
+                onAllow:  { consent.allow() },
+                onNotNow: { consent.deny() }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.hidden)
+        }
     }
 }
 

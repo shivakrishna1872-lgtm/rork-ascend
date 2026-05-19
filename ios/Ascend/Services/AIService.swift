@@ -96,7 +96,19 @@ nonisolated struct AIService {
 
     // MARK: - Public APIs
 
-    func analyzePhysique(front: UIImage, side: UIImage, back: UIImage, profile: ProfileSnapshot, history: ScoreHistory? = nil) async throws -> PhysiqueAnalysis {
+    func analyzePhysique(front: UIImage, side: UIImage, back: UIImage, profile: ProfileSnapshot, history: ScoreHistory? = nil, anchors: PhysiqueAnchors? = nil) async throws -> PhysiqueAnalysis {
+        let anchorBlock: String = {
+            guard let a = anchors else { return "(no on-device pose anchors available)" }
+            return """
+            ON-DEVICE POSE ANCHORS (MediaPipe/Vision-equivalent, averaged across visible angles — anchor your scores here):
+            - measured_symmetry_index: \(Int(a.symmetry * 100))/100 (front+back weighted)
+            - shoulder_waist_ratio: \(String(format: "%.2f", a.shoulderWaistRatio)) (>1.5 = strong V-taper)
+            - body_coverage_y: \(Int(a.coverageY * 100))% of frame (higher = more body visible)
+            - average_landmark_confidence: \(Int(a.confidence * 100))/100
+            - angles_with_body_detected: \(a.detectedAngles) of 3
+            Use these to anchor symmetry, vTaper, and bodyFatConfidence. Do NOT contradict them by more than 8 points unless the visual evidence is overwhelming.
+            """
+        }()
         let anchorLine: String = {
             guard let h = history, !h.isEmpty else { return "PERSONAL CALIBRATION: (none — first analysis; rely on photos only)" }
             return """
@@ -114,6 +126,8 @@ nonisolated struct AIService {
         You are Ascend Life, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(Int(profile.heightCm))cm, \(Int(profile.weightKg))kg.
 
         \(anchorLine)
+
+        \(anchorBlock)
 
         ACCURACY RULES (be GENEROUS about photo quality — never penalize for framing, lighting, distance, or angle):
         - Treat ANY usable photo as normal input. Partial body, waist-up only, cropped legs, side-only, mirror selfies, casual lighting, phone camera angle — ALL acceptable. Do NOT lower scores because of photo quality.
@@ -399,6 +413,15 @@ nonisolated struct ScoreHistory {
     let isEmpty: Bool
 
     static let none = ScoreHistory(summary: "", isEmpty: true)
+}
+
+/// Aggregated on-device pose measurements passed to the AI to anchor scoring.
+nonisolated struct PhysiqueAnchors {
+    let symmetry: Double            // 0..1
+    let shoulderWaistRatio: Double
+    let coverageY: Double           // 0..1
+    let confidence: Double          // 0..1
+    let detectedAngles: Int         // 0...3
 }
 
 nonisolated struct ProfileSnapshot {

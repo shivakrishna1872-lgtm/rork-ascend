@@ -8,6 +8,9 @@ struct OnboardingFlow: View {
 
     @State private var step: Int = 0
     @State private var name: String = ""
+    @State private var email: String? = nil
+    @State private var appleUserId: String? = nil
+    @State private var signedInWithApple: Bool = false
     @State private var age: Int? = nil
     @State private var sex: Sex? = nil
     @State private var heightCm: Double? = nil
@@ -109,13 +112,26 @@ struct OnboardingFlow: View {
         VStack(alignment: .leading, spacing: 22) {
             stepHeader(title: "About you", caption: "These numbers calibrate your engine.")
 
-            VStack(alignment: .leading, spacing: 8) {
-                fieldLabel("Name")
-                TextField("Enter your name", text: $name)
-                    .textInputAutocapitalization(.words)
-                    .font(.system(size: 17, weight: .semibold))
-                    .padding(.horizontal, 16).frame(height: 52)
-                    .glassCard(radius: 14)
+            if !signedInWithApple {
+                VStack(alignment: .leading, spacing: 8) {
+                    fieldLabel("Name")
+                    TextField("Enter your name", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .font(.system(size: 17, weight: .semibold))
+                        .padding(.horizontal, 16).frame(height: 52)
+                        .glassCard(radius: 14)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Theme.good)
+                    Text("Signed in with Apple")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 14).frame(height: 44)
+                .glassCard(radius: 12)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -170,7 +186,8 @@ struct OnboardingFlow: View {
     }
 
     private var personalValid: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty && age != nil && sex != nil
+        let nameOk = signedInWithApple || !name.trimmingCharacters(in: .whitespaces).isEmpty
+        return nameOk && age != nil && sex != nil
     }
 
     private var bodyDims: some View {
@@ -369,13 +386,26 @@ struct OnboardingFlow: View {
     }
 
     private func handleApple(result: Result<ASAuthorization, Error>) {
-        if case .success(let auth) = result,
-           let cred = auth.credential as? ASAuthorizationAppleIDCredential,
-           let n = cred.fullName {
+        guard case .success(let auth) = result,
+              let cred = auth.credential as? ASAuthorizationAppleIDCredential else {
+            advance(); return
+        }
+        if let n = cred.fullName {
             let formatter = PersonNameComponentsFormatter()
             let nm = formatter.string(from: n)
             if !nm.isEmpty { name = nm }
         }
+        if let e = cred.email, !e.isEmpty { email = e }
+        appleUserId = cred.user
+        signedInWithApple = true
+        // Persist immediately — Apple only returns name/email on first sign-in.
+        AuthService.shared.store(userId: cred.user, name: name.isEmpty ? nil : name, email: email)
+        if name.trimmingCharacters(in: .whitespaces).isEmpty,
+           let cached = AuthService.shared.cachedName, !cached.isEmpty {
+            name = cached
+        }
+        if email == nil { email = AuthService.shared.cachedEmail }
+        Haptics.success()
         advance()
     }
 
@@ -400,6 +430,8 @@ struct OnboardingFlow: View {
             existing.goalsRaw = goals.map { $0.rawValue }
             existing.activityRaw = finalActivity.rawValue
             existing.onboarded = true
+            if let appleUserId { existing.appleUserId = appleUserId }
+            if let email { existing.email = email }
         } else {
             let u = UserProfile(
                 name: finalName,
@@ -409,7 +441,9 @@ struct OnboardingFlow: View {
                 weightKg: finalWeight,
                 goalsRaw: goals.map { $0.rawValue },
                 activityRaw: finalActivity.rawValue,
-                onboarded: true
+                onboarded: true,
+                appleUserId: appleUserId,
+                email: email
             )
             ctx.insert(u)
         }

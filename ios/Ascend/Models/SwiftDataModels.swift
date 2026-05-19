@@ -19,6 +19,8 @@ final class UserProfile {
     var reduceMotion: Bool
     var hydrationGlasses: Int
     var hydrationDate: Date?
+    var appleUserId: String?
+    var email: String?
 
     init(
         name: String = "Athlete",
@@ -36,7 +38,9 @@ final class UserProfile {
         onboarded: Bool = false,
         reduceMotion: Bool = false,
         hydrationGlasses: Int = 0,
-        hydrationDate: Date? = nil
+        hydrationDate: Date? = nil,
+        appleUserId: String? = nil,
+        email: String? = nil
     ) {
         self.name = name
         self.ageValue = ageValue
@@ -54,6 +58,8 @@ final class UserProfile {
         self.reduceMotion = reduceMotion
         self.hydrationGlasses = hydrationGlasses
         self.hydrationDate = hydrationDate
+        self.appleUserId = appleUserId
+        self.email = email
     }
 
     var sex: Sex { Sex(rawValue: sexRaw) ?? .male }

@@ -54,22 +54,14 @@ struct HomeView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Button {
-                Haptics.tap(); showProfile = true
-            } label: {
-                HStack(spacing: 10) {
-                    TierEmblem(tier: user.tier, size: 36)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Welcome back")
-                            .font(.system(size: 11, weight: .medium)).tracking(1.5)
-                            .foregroundStyle(Theme.textTertiary)
-                        Text(user.name)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(Theme.textPrimary)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Welcome back")
+                    .font(.system(size: 11, weight: .medium)).tracking(1.5)
+                    .foregroundStyle(Theme.textTertiary)
+                Text(user.name)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
             }
-            .buttonStyle(.plain)
             Spacer()
             HStack(spacing: 4) {
                 Image(systemName: "flame.fill").font(.system(size: 12, weight: .bold))
@@ -81,6 +73,35 @@ struct HomeView: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .glassCard(radius: 12)
+
+            // Prominent profile button — clearly labeled, large tap target,
+            // visually obvious it's clickable (Apple Review compliance).
+            Button {
+                Haptics.tap(); showProfile = true
+            } label: {
+                HStack(spacing: 8) {
+                    TierEmblem(tier: user.tier, size: 30)
+                    Text("Profile")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Theme.accent.opacity(0.18))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Theme.accent.opacity(0.55), lineWidth: 0.8)
+                        )
+                }
+                .shadow(color: Theme.accent.opacity(0.25), radius: 8, y: 2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Profile")
+            .accessibilityHint("Opens your account, settings, and delete account options.")
         }
         .padding(.bottom, 4)
     }

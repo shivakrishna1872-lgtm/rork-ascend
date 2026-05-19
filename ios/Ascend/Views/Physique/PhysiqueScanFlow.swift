@@ -415,7 +415,22 @@ struct PhysiqueScanFlow: View {
             }
 
             // 2) Body confirmed → run the AI analysis anchored to detected on-device measurements.
-            let rawAnalysis = try await AIService.shared.analyzePhysique(front: f, side: s, back: b, profile: snap, history: history)
+            //    Compute aggregated pose anchors so the model can lean on them.
+            let detectedPoses = poses.compactMap { $0 }
+            let avgSym = detectedPoses.isEmpty ? 0.5 : detectedPoses.map(\.symmetry).reduce(0, +) / Double(detectedPoses.count)
+            let avgSW = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.shoulderWaistRatio).reduce(0, +) / Double(detectedPoses.count)
+            let avgCov = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.coverageY).reduce(0, +) / Double(detectedPoses.count)
+            let avgConfPose = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.confidenceAverage).reduce(0, +) / Double(detectedPoses.count)
+            let anchors = PhysiqueAnchors(
+                symmetry: avgSym,
+                shoulderWaistRatio: avgSW,
+                coverageY: avgCov,
+                confidence: avgConfPose,
+                detectedAngles: detectedPoses.count
+            )
+            let rawAnalysis = try await AIService.shared.analyzePhysique(
+                front: f, side: s, back: b, profile: snap, history: history, anchors: anchors
+            )
 
             // --- Multi-angle averaging (MediaPipe-style) ---
             // Symmetry: trimmed-mean across every angle that detected a body.

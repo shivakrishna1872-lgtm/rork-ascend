@@ -143,26 +143,35 @@ struct ProfileView: View {
         guard !deleting else { return }
         deleting = true
         Haptics.warning()
-        // 1. Wipe every SwiftData record owned by this user.
-        do {
-            try ctx.delete(model: PhysiqueScanRecord.self)
-            try ctx.delete(model: FaceScanRecord.self)
-            try ctx.delete(model: MealEntry.self)
-            try ctx.delete(model: Achievement.self)
-            try ctx.delete(model: FriendGroup.self)
-            try ctx.delete(model: Friend.self)
-            try ctx.delete(model: UserProfile.self)
-            try ctx.save()
-        } catch {
-            // Best-effort cleanup; still proceed to sign-out so the user is never stuck.
+        Task {
+            // 1. Server-side: revoke the Apple refresh token so the user is
+            //    fully unlinked from Sign in with Apple (App Review 5.1.1(v)).
+            //    Best-effort — we never block local deletion on a network call.
+            _ = await AuthService.shared.revokeAppleTokenIfPossible()
+
+            await MainActor.run {
+                // 2. Wipe every SwiftData record owned by this user.
+                do {
+                    try ctx.delete(model: PhysiqueScanRecord.self)
+                    try ctx.delete(model: FaceScanRecord.self)
+                    try ctx.delete(model: MealEntry.self)
+                    try ctx.delete(model: Achievement.self)
+                    try ctx.delete(model: FriendGroup.self)
+                    try ctx.delete(model: Friend.self)
+                    try ctx.delete(model: UserProfile.self)
+                    try ctx.save()
+                } catch {
+                    // Best-effort cleanup; still proceed so the user is never stuck.
+                }
+                // 3. Cancel scheduled notifications & shared widget state.
+                NotificationService.shared.cancelAll()
+                // 4. Clear Apple credential cache locally.
+                AuthService.shared.signOut()
+                deleting = false
+                // 5. Drop back to the login / onboarding flow.
+                dismiss()
+            }
         }
-        // 2. Cancel scheduled notifications & shared widget state.
-        NotificationService.shared.cancelAll()
-        // 3. Revoke Apple credential cache (full delete, not deactivate).
-        AuthService.shared.signOut()
-        deleting = false
-        // 4. Drop back to the login / onboarding flow.
-        dismiss()
     }
 
     private func refreshNotifStatus() async {

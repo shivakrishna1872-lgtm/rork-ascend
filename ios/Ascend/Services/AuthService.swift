@@ -14,6 +14,7 @@ final class AuthService {
     private let userIdKey = "appleUserId"
     private let nameKey = "appleName"
     private let emailKey = "appleEmail"
+    private let authCodeKey = "appleAuthCode"
 
     private(set) var appleUserId: String?
     private(set) var cachedName: String?
@@ -29,7 +30,7 @@ final class AuthService {
 
     /// Persist Apple credentials. Name/email are ONLY provided on the very first
     /// successful sign-in — we cache them so future launches don't need to ask.
-    func store(userId: String, name: String?, email: String?) {
+    func store(userId: String, name: String?, email: String?, authorizationCode: String? = nil) {
         appleUserId = userId
         Self.keychainWrite(service, userIdKey, userId)
         if let name, !name.isEmpty {
@@ -40,6 +41,16 @@ final class AuthService {
             cachedEmail = email
             Self.keychainWrite(service, emailKey, email)
         }
+        if let authorizationCode, !authorizationCode.isEmpty {
+            Self.keychainWrite(service, authCodeKey, authorizationCode)
+        }
+    }
+
+    /// Apple-issued single-use authorization code captured on the most recent
+    /// sign-in. Used server-side to mint a refresh_token and revoke it when
+    /// the user deletes their account (App Store Guideline 5.1.1(v)).
+    var authorizationCode: String? {
+        Self.keychainRead(service, authCodeKey)
     }
 
     /// Verify the stored Apple ID is still valid for this device.
@@ -71,6 +82,36 @@ final class AuthService {
         Self.keychainDelete(service, userIdKey)
         Self.keychainDelete(service, nameKey)
         Self.keychainDelete(service, emailKey)
+        Self.keychainDelete(service, authCodeKey)
+    }
+
+    /// Calls the backend to revoke this user's Apple refresh token so the
+    /// account is fully unlinked from Apple's side (required for deletion to
+    /// pass App Review). Returns true on success, false if there's nothing
+    /// to revoke or the call failed — caller should still proceed with the
+    /// local wipe in either case.
+    func revokeAppleTokenIfPossible() async -> Bool {
+        guard let code = authorizationCode, !code.isEmpty else { return false }
+        let base = Config.EXPO_PUBLIC_RORK_FUNCTIONS_URL
+        guard let url = URL(string: base.trimmingCharacters(in: .init(charactersIn: "/"))
+                              + "/apple/revoke") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 15
+        let payload: [String: String] = ["authorizationCode": code]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else { return false }
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let ok = obj["ok"] as? Bool {
+                return http.statusCode == 200 && ok
+            }
+            return (200..<300).contains(http.statusCode)
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Keychain helpers

@@ -5,6 +5,11 @@
       "name": "Ascend",
       "path": "ios",
       "framework": "swift"
+    },
+    {
+      "name": "Functions",
+      "path": "functions",
+      "framework": "cloudflare"
     }
   ]
 }

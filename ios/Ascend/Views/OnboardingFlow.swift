@@ -88,7 +88,7 @@ struct OnboardingFlow: View {
 
             VStack(spacing: 12) {
                 SignInWithAppleButton(.continue, onRequest: { req in
-                    req.requestedScopes = [.fullName]
+                    req.requestedScopes = [.fullName, .email]
                 }, onCompletion: { result in
                     handleApple(result: result)
                 })
@@ -398,8 +398,18 @@ struct OnboardingFlow: View {
         if let e = cred.email, !e.isEmpty { email = e }
         appleUserId = cred.user
         signedInWithApple = true
+        // Capture the authorizationCode so we can revoke server-side on delete.
+        let authCode: String? = {
+            guard let data = cred.authorizationCode else { return nil }
+            return String(data: data, encoding: .utf8)
+        }()
         // Persist immediately — Apple only returns name/email on first sign-in.
-        AuthService.shared.store(userId: cred.user, name: name.isEmpty ? nil : name, email: email)
+        AuthService.shared.store(
+            userId: cred.user,
+            name: name.isEmpty ? nil : name,
+            email: email,
+            authorizationCode: authCode
+        )
         if name.trimmingCharacters(in: .whitespaces).isEmpty,
            let cached = AuthService.shared.cachedName, !cached.isEmpty {
             name = cached

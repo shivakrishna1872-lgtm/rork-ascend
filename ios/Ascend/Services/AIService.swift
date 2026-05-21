@@ -143,10 +143,11 @@ nonisolated struct AIService {
             \(h.summary)
             
             How to use it:
-            - The mean ± std is this user's learned baseline. Stay WITHIN ±1 std unless the new photos clearly justify movement.
-            - Low std on a metric → high confidence in that baseline → do NOT swing it by more than 2-3 points.
-            - High std on a metric → noisier history → you may correct more, but stay anchored to the mean.
-            - Honor the recent trend direction — do not flip the sign without strong visual evidence.
+            - The mean ± std is the user's recent baseline — use it for context, NOT as a ceiling.
+            - REWARD real progress: if the new photos show visible improvement (leaner waist, more muscle, sharper conditioning, better posture/symmetry), move the score by 3–8 points or more. Users should feel their work.
+            - Do NOT artificially compress changes. Score the photos honestly; the app handles its own smoothing.
+            - Only stay close to the mean when the new photos look genuinely similar to the prior ones.
+            - Honor the recent trend direction unless the photos clearly contradict it.
             """
         }()
         let prompt = """
@@ -169,7 +170,7 @@ nonisolated struct AIService {
         - If a photo is partial, dim, blurry, or oddly angled, STILL produce a confident estimate. Lower bodyFatConfidence slightly (5-15 points) but keep the main scores stable.
         - NEVER refuse to score, never return a placeholder, never tell the user to retake the photo.
 
-        STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, angle, or partial framing.
+        STABILITY vs SENSITIVITY: Be deterministic — identical inputs MUST produce identical outputs, and do NOT over-react to lighting/angle/framing differences alone. BUT when photos show actual physique change (visible leanness shift, added muscle, better posture, tighter waist), reflect it: a noticeable real change should move the relevant metric by 3–8 points, and a major transformation can move it 10+. Never flat-line at the baseline when the user has clearly progressed.
 
         Return ONLY strict JSON:
         {
@@ -220,10 +221,11 @@ nonisolated struct AIService {
             \(h.summary)
             
             How to use it:
-            - Mean ± std is this user's learned PSL baseline. Stay WITHIN ±1 std unless the new photos demand it.
-            - Low std → confident baseline → cap movement at 2-3 points.
-            - High std → noisier; you may correct more, but stay anchored to the mean.
-            - Preserve the recent trend direction unless clearly contradicted.
+            - Mean ± std is the user's recent PSL baseline — context, NOT a ceiling.
+            - REWARD real improvement: better skin, leaner face, sharper jawline from body-fat loss, improved grooming, posture or expression — move the relevant metric by 3–8 points or more so progress feels visible.
+            - Do NOT artificially flatten changes; the app already applies its own smoothing.
+            - Stay near the mean only when the new photo genuinely looks the same as recent ones.
+            - Honor the recent trend direction unless the photo clearly contradicts it.
             """
         }()
 
@@ -248,7 +250,7 @@ nonisolated struct AIService {
 
         MULTI-PHOTO AVERAGING: You are looking at \(images.count) photo(s) of the SAME person. Compute scores for each, then RETURN THE AVERAGE. Do not pick the best or worst photo. The symmetry score must be primarily driven by the on-device symmetry_index above (which is already averaged across all photos) so it stays stable across angles/lighting.
 
-        STABILITY: Be deterministic. Identical inputs MUST produce identical outputs. Similar photos must stay within ±3 points of prior rolling average. Do not over-react to lighting, expression, or camera differences.
+        STABILITY vs SENSITIVITY: Be deterministic — identical inputs MUST produce identical outputs, and do NOT over-react to lighting/expression/camera differences alone. BUT when the photo shows real change (leaner face, clearer skin, sharper jawline, better grooming, improved symmetry from posture/expression), reflect it: a meaningful real change should move the metric by 3–8 points, and a major glow-up can move it 10+. Never flat-line when the user has clearly improved.
 
         Return ONLY strict JSON:
         {

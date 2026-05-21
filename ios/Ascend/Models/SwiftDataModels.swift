@@ -176,9 +176,10 @@ enum PhysiqueSmoothing {
                 recommendations: raw.recommendations
             )
         }
-        // Stronger default damping — heavily weight the rolling baseline.
-        // 1 scan -> 0.38, 2 -> 0.32, 3 -> 0.28, 4+ -> 0.22
-        let baseWeight = max(0.22, 0.46 - Double(n) * 0.06)
+        // Dynamic weighting — favor the NEW reading so real progress shows up.
+        // 1 scan -> 0.70, 2 -> 0.64, 3 -> 0.58, 4 -> 0.54, 5+ -> 0.50
+        // The baseline still anchors against noise, but every scan moves the dial.
+        let baseWeight = max(0.50, 0.76 - Double(n) * 0.06)
         let recent = Array(priors.prefix(5))
         func avg(_ key: (PhysiqueScanRecord) -> Double) -> Double {
             recent.map(key).reduce(0, +) / Double(recent.count)
@@ -188,15 +189,20 @@ enum PhysiqueSmoothing {
             let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
             return sqrt(v)
         }
-        // Breakthrough rule: if raw exceeds the rolling mean by more than max(1*std, 4 pts),
-        // it's a real improvement — bias toward the new reading.
+        // Breakthrough rule: any meaningful movement (>= max(0.6*std, 2 pts)) in the
+        // improvement direction trusts the new reading even more, so visible progress
+        // produces a satisfying jump instead of a tiny nudge. Regressions also register
+        // visibly so the score reflects reality both ways.
         func adapt(_ rawVal: Double, _ avgVal: Double, _ stdVal: Double, lowerIsBetter: Bool = false) -> Double {
             let delta = lowerIsBetter ? (avgVal - rawVal) : (rawVal - avgVal)
-            let threshold = max(stdVal, 4.0)
+            let threshold = max(stdVal * 0.6, 2.0)
             if delta > threshold {
-                // Genuine breakthrough — accept up to 75% of the new reading.
-                let bonus = min(0.55, (delta - threshold) / 12.0)
-                return min(0.85, baseWeight + 0.20 + bonus)
+                let bonus = min(0.30, (delta - threshold) / 8.0)
+                return min(0.95, baseWeight + 0.15 + bonus)
+            }
+            if delta < -threshold {
+                let penalty = min(0.20, (-delta - threshold) / 10.0)
+                return min(0.92, baseWeight + 0.10 + penalty)
             }
             return baseWeight
         }
@@ -282,9 +288,9 @@ enum FaceSmoothing {
     static func smooth(raw: FaceAnalysis, priors: [FaceScanRecord]) -> FaceAnalysis {
         let n = priors.count
         guard n > 0 else { return raw }
-        // Stronger default damping toward the rolling baseline.
-        // 1 scan -> 0.38, 2 -> 0.32, 3 -> 0.28, 4+ -> 0.22
-        let baseWeight = max(0.22, 0.46 - Double(n) * 0.06)
+        // Dynamic weighting — favor the NEW reading so real grooming/leanness/posture
+        // wins show up immediately. 1 -> 0.70, 2 -> 0.64, 3 -> 0.58, 4 -> 0.54, 5+ -> 0.50
+        let baseWeight = max(0.50, 0.76 - Double(n) * 0.06)
         let recent = Array(priors.prefix(5))
         func avg(_ key: (FaceScanRecord) -> Double) -> Double {
             recent.map(key).reduce(0, +) / Double(recent.count)
@@ -294,13 +300,18 @@ enum FaceSmoothing {
             let v = recent.map { pow(key($0) - m, 2) }.reduce(0, +) / Double(recent.count)
             return sqrt(v)
         }
-        // Breakthrough: real improvement (> max(std, 4pts)) above the rolling mean.
+        // Breakthrough: any meaningful move (>= max(0.6*std, 2 pts)) trusts the new
+        // reading more. Regressions register visibly so progress feedback is honest.
         func adapt(_ rawVal: Double, _ avgVal: Double, _ stdVal: Double) -> Double {
             let delta = rawVal - avgVal
-            let threshold = max(stdVal, 4.0)
+            let threshold = max(stdVal * 0.6, 2.0)
             if delta > threshold {
-                let bonus = min(0.55, (delta - threshold) / 12.0)
-                return min(0.85, baseWeight + 0.20 + bonus)
+                let bonus = min(0.30, (delta - threshold) / 8.0)
+                return min(0.95, baseWeight + 0.15 + bonus)
+            }
+            if delta < -threshold {
+                let penalty = min(0.20, (-delta - threshold) / 10.0)
+                return min(0.92, baseWeight + 0.10 + penalty)
             }
             return baseWeight
         }

@@ -368,7 +368,7 @@ struct PhysiqueScanFlow: View {
 
     private func runAnalysis() async {
         guard let f = front, let s = side, let b = back else { return }
-        let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw)
+        let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw, unitSystem: user.unitSystemRaw)
         let history = PhysiqueSmoothing.history(from: priorScans)
         do {
             // 1) On-device body detection (Vision = MediaPipe-equivalent on iOS) on EVERY photo.

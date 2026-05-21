@@ -21,6 +21,7 @@ final class UserProfile {
     var hydrationDate: Date?
     var appleUserId: String?
     var email: String?
+    var unitSystemRaw: String = UnitSystem.metric.rawValue
 
     init(
         name: String = "Athlete",
@@ -40,7 +41,8 @@ final class UserProfile {
         hydrationGlasses: Int = 0,
         hydrationDate: Date? = nil,
         appleUserId: String? = nil,
-        email: String? = nil
+        email: String? = nil,
+        unitSystemRaw: String = UnitSystem.metric.rawValue
     ) {
         self.name = name
         self.ageValue = ageValue
@@ -60,9 +62,11 @@ final class UserProfile {
         self.hydrationDate = hydrationDate
         self.appleUserId = appleUserId
         self.email = email
+        self.unitSystemRaw = unitSystemRaw
     }
 
     var sex: Sex { Sex(rawValue: sexRaw) ?? .male }
+    var unitSystem: UnitSystem { UnitSystem(rawValue: unitSystemRaw) ?? .metric }
     var activity: ActivityLevel { ActivityLevel(rawValue: activityRaw) ?? .active }
     var personality: AIPersonality { AIPersonality(rawValue: personalityRaw) ?? .science }
     var goals: [Goal] { goalsRaw.compactMap { Goal(rawValue: $0) } }

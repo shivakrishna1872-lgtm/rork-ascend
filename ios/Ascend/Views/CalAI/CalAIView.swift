@@ -80,7 +80,7 @@ struct CalAIView: View {
                                        font: .system(size: 44, weight: .semibold, design: .rounded))
                         Text("left").font(.aetherBody).foregroundStyle(Theme.textSecondary)
                     }
-                    Text("\(totalCals) / \(user.dailyCalorieTarget) kcal")
+                    Text("\(totalCals) / \(user.dailyCalorieTarget) \(user.unitSystem.calorieUnit)")
                         .font(.aetherMono).foregroundStyle(Theme.textSecondary)
                 }
                 Spacer()
@@ -187,7 +187,7 @@ struct CalAIView: View {
                         thumb(for: meal)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(meal.name).font(.system(size: 15, weight: .semibold))
-                            Text("\(meal.calories) kcal · P\(meal.proteinG) C\(meal.carbsG) F\(meal.fatsG)")
+                            Text("\(meal.calories) \(user.unitSystem.calorieUnit) · P\(meal.proteinG) C\(meal.carbsG) F\(meal.fatsG)")
                                 .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
                         }
                         Spacer()
@@ -394,7 +394,7 @@ struct MealLogSheet: View {
                     }
                 }
                 Spacer()
-                Text("\(r.calories) kcal").font(.aetherMono).foregroundStyle(Theme.accentGlow)
+                Text("\(r.calories) \(user.unitSystem.calorieUnit)").font(.aetherMono).foregroundStyle(Theme.accentGlow)
             }
             HStack(spacing: 8) {
                 macroPill("P", r.proteinG, Theme.elite)
@@ -458,7 +458,7 @@ struct MealLogSheet: View {
         error = nil
         Task {
             do {
-                let r = try await AIService.shared.analyzeMeal(description: description, image: image)
+                let r = try await AIService.shared.analyzeMeal(description: description, image: image, unitSystem: user.unitSystemRaw)
                 await MainActor.run {
                     withAnimation { result = r; analyzing = false }
                     Haptics.success()

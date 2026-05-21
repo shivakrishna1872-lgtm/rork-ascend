@@ -150,7 +150,9 @@ nonisolated struct AIService {
             """
         }()
         let prompt = """
-        You are Ascend Life, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(Int(profile.heightCm))cm, \(Int(profile.weightKg))kg.
+        You are Ascend Life, a precise, encouraging physique-analysis coach. Analyze three photos (front, side, back) of an athlete: \(profile.age) y/o, \(profile.sex), \(profile.heightDisplay), \(profile.weightDisplay).
+
+        \(profile.unitsBlock)
 
         \(anchorLine)
 
@@ -256,7 +258,12 @@ nonisolated struct AIService {
         return try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
     }
 
-    func analyzeMeal(description: String, image: UIImage?) async throws -> MealAnalysis {
+    func analyzeMeal(description: String, image: UIImage?, unitSystem: String = "Metric") async throws -> MealAnalysis {
+        let isImperial = unitSystem.lowercased() == "imperial"
+        let calorieUnit = isImperial ? "cal" : "kcal"
+        let unitsLine = isImperial
+            ? "USER UNITS: IMPERIAL. In the 'note' and any other user-facing strings use food calories as 'cal' (NOT 'kcal'), and use oz/lb for solid portions where natural; grams are still fine for macros. Portions in the 'ingredients' list may use oz, lb, cups, tbsp, or grams as appropriate."
+            : "USER UNITS: METRIC. In the 'note' and any other user-facing strings use 'kcal' for food calories, and prefer grams/ml for portions in the 'ingredients' list."
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let descriptionLine: String = {
             if trimmed.isEmpty {
@@ -271,6 +278,8 @@ nonisolated struct AIService {
         You are Ascend Life's nutrition vision coach. Identify the meal in detail, then estimate accurate macros from the identified ingredients.
 
         \(descriptionLine)
+
+        \(unitsLine)
 
         STEP 1 — IDENTIFY THE DISH (the WHAT):
         - Name the dish (e.g. "Chicken burrito bowl", "Margherita pizza", "Caesar salad").
@@ -298,7 +307,7 @@ nonisolated struct AIService {
           "name": short dish name (max 4 words),
           "dishType": one of ["bowl","plate","sandwich","pizza","salad","pasta","soup","dessert","drink","snack","other"],
           "ingredients": [ {"name": "grilled chicken", "portion": "120 g"}, ... ],
-          "calories": integer kcal,
+          "calories": integer \(calorieUnit) (food calories — same numeric value either way; the label is just what the user sees elsewhere),
           "proteinG": integer grams,
           "carbsG": integer grams,
           "fatsG": integer grams,
@@ -318,6 +327,9 @@ nonisolated struct AIService {
         You are Ascend, a disciplined yet warm self-improvement OS. Generate one daily insight for an athlete:
         - age \(profile.age), sex \(profile.sex), goals: \(profile.goals.joined(separator: ", "))
         - streak: \(streak) days, scans this month: \(recentScansCount), calories adherence: \(Int(caloriesAdherence*100))%
+
+        \(profile.unitsBlock)
+
         Return strict JSON: {"headline": "one short headline (max 8 words)", "detail": "one short coaching sentence"}
         Output JSON only. Never use emojis.
         """
@@ -495,4 +507,31 @@ nonisolated struct ProfileSnapshot {
     let heightCm: Double
     let weightKg: Double
     let goals: [String]
+    let unitSystem: String
+
+    init(age: Int, sex: String, heightCm: Double, weightKg: Double, goals: [String], unitSystem: String = "Metric") {
+        self.age = age; self.sex = sex; self.heightCm = heightCm; self.weightKg = weightKg
+        self.goals = goals; self.unitSystem = unitSystem
+    }
+
+    var isImperial: Bool { unitSystem.lowercased() == "imperial" }
+    var heightDisplay: String {
+        if isImperial {
+            let totalIn = heightCm / 2.54
+            let ft = Int(totalIn / 12)
+            let inches = Int(totalIn.truncatingRemainder(dividingBy: 12).rounded())
+            return "\(ft)'\(inches == 12 ? 0 : inches)\""
+        }
+        return "\(Int(heightCm))cm"
+    }
+    var weightDisplay: String {
+        isImperial ? String(format: "%.0flb", weightKg * 2.2046226218)
+                   : "\(Int(weightKg))kg"
+    }
+    var calorieUnit: String { isImperial ? "cal" : "kcal" }
+    var unitsBlock: String {
+        isImperial
+        ? "USER UNITS: IMPERIAL. In any user-facing strings (insight, recommendations, note), use pounds (lb), inches/feet (ft/in), and food calories as 'cal' (not kcal). Do NOT say cm, kg, or kcal in user-facing copy."
+        : "USER UNITS: METRIC. In any user-facing strings (insight, recommendations, note), use kilograms (kg), centimeters (cm), and 'kcal' for food calories. Do NOT use lb, inches, or 'cal'."
+    }
 }

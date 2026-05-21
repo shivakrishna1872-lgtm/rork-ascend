@@ -15,6 +15,7 @@ struct OnboardingFlow: View {
     @State private var sex: Sex? = nil
     @State private var heightCm: Double? = nil
     @State private var weightKg: Double? = nil
+    @State private var unitSystem: UnitSystem = .metric
     @State private var goals: Set<Goal> = []
     @State private var activity: ActivityLevel? = nil
     @State private var notifications: Bool = false
@@ -194,10 +195,40 @@ struct OnboardingFlow: View {
         VStack(alignment: .leading, spacing: 22) {
             stepHeader(title: "Body dimensions", caption: "Used for calorie + macro targeting.")
 
+            // Units selector (metric vs imperial).
+            VStack(alignment: .leading, spacing: 8) {
+                fieldLabel("Units")
+                HStack(spacing: 10) {
+                    ForEach(UnitSystem.allCases) { u in
+                        let on = unitSystem == u
+                        Button {
+                            Haptics.tap()
+                            withAnimation(.spring) { unitSystem = u }
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(u.rawValue)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(on ? Theme.bg : Theme.textPrimary)
+                                Text(u == .metric ? "cm · kg · kcal" : "ft/in · lb · cal")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(on ? Theme.bg.opacity(0.7) : Theme.textTertiary)
+                            }
+                            .frame(maxWidth: .infinity).frame(height: 52)
+                            .background {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(on ? .white.opacity(0.9) : Theme.surface.opacity(0.5))
+                            }
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 fieldLabel("Height")
                 HStack {
-                    Text(heightTouched ? "\(Int((heightCm ?? 175).rounded())) cm" : "—")
+                    Text(heightTouched ? unitSystem.formatHeight(cm: heightCm ?? 175) : "—")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(heightTouched ? Theme.textPrimary : Theme.textTertiary)
                         .contentTransition(.numericText())
@@ -216,7 +247,7 @@ struct OnboardingFlow: View {
             VStack(alignment: .leading, spacing: 8) {
                 fieldLabel("Weight")
                 HStack {
-                    Text(weightTouched ? String(format: "%.1f kg", weightKg ?? 72) : "—")
+                    Text(weightTouched ? unitSystem.formatWeight(kg: weightKg ?? 72) : "—")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(weightTouched ? Theme.textPrimary : Theme.textTertiary)
                         .contentTransition(.numericText())
@@ -439,6 +470,7 @@ struct OnboardingFlow: View {
             existing.weightKg = finalWeight
             existing.goalsRaw = goals.map { $0.rawValue }
             existing.activityRaw = finalActivity.rawValue
+            existing.unitSystemRaw = unitSystem.rawValue
             existing.onboarded = true
             if let appleUserId { existing.appleUserId = appleUserId }
             if let email { existing.email = email }
@@ -453,7 +485,8 @@ struct OnboardingFlow: View {
                 activityRaw: finalActivity.rawValue,
                 onboarded: true,
                 appleUserId: appleUserId,
-                email: email
+                email: email,
+                unitSystemRaw: unitSystem.rawValue
             )
             ctx.insert(u)
         }

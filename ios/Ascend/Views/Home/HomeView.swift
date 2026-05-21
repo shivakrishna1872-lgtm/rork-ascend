@@ -235,7 +235,7 @@ struct HomeView: View {
         return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
             snapshotCard(icon: "fork.knife",
                          title: "Nutrition",
-                         primary: mealsToday.isEmpty ? "—" : "\(kcalEaten) kcal",
+                         primary: mealsToday.isEmpty ? "—" : "\(kcalEaten) \(user.unitSystem.calorieUnit)",
                          hint: mealsToday.isEmpty ? "Log a meal" : nil,
                          progress: Double(kcalEaten) / Double(max(1, user.dailyCalorieTarget)),
                          tint: Theme.accent)
@@ -374,7 +374,7 @@ struct HomeView: View {
     }
 
     private func loadInsight() async {
-        let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw)
+        let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw, unitSystem: user.unitSystemRaw)
         let mealsToday = mealsTodayList
         let adherence = Double(mealsToday.reduce(0) { $0 + $1.calories }) / Double(max(1, user.dailyCalorieTarget))
         if let r = try? await AIService.shared.dailyInsight(profile: snap, streak: user.streak, recentScansCount: scans.count, caloriesAdherence: adherence) {

@@ -27,6 +27,7 @@ struct ProfileView: View {
                     statsCard.blurFadeIn(delay: 0.12)
                     personalitySection.blurFadeIn(delay: 0.18)
                     accessibilitySection.blurFadeIn(delay: 0.24)
+                    unitsSection.blurFadeIn(delay: 0.27)
                     notificationsSection.blurFadeIn(delay: 0.30)
                     aboutSection.blurFadeIn(delay: 0.36)
                     privacySection.blurFadeIn(delay: 0.40)
@@ -350,6 +351,46 @@ struct ProfileView: View {
         }
     }
 
+    // MARK: - Units (metric / imperial)
+
+    private var unitsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Units")
+            HStack(spacing: 10) {
+                ForEach(UnitSystem.allCases) { u in
+                    let on = user.unitSystem == u
+                    Button {
+                        Haptics.tap()
+                        withAnimation(.spring) {
+                            user.unitSystemRaw = u.rawValue
+                            try? ctx.save()
+                        }
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(u.rawValue)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(on ? Theme.bg : Theme.textPrimary)
+                            Text(u == .metric ? "cm · kg · kcal" : "ft/in · lb · cal")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(on ? Theme.bg.opacity(0.7) : Theme.textTertiary)
+                        }
+                        .frame(maxWidth: .infinity).frame(height: 52)
+                        .background {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(on ? .white.opacity(0.9) : Theme.surface.opacity(0.5))
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text("Affects how height, weight and calories are displayed — and the units Ascend’s AI uses in coaching tips.")
+                .font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                .padding(.horizontal, 4)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var accessibilitySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Accessibility")
@@ -378,11 +419,11 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: 10) {
                 row("Age", "\(user.ageValue)")
                 Divider().overlay(Theme.line)
-                row("Height", "\(Int(user.heightCm)) cm")
+                row("Height", user.unitSystem.formatHeight(cm: user.heightCm))
                 Divider().overlay(Theme.line)
-                row("Weight", String(format: "%.1f kg", user.weightKg))
+                row("Weight", user.unitSystem.formatWeight(kg: user.weightKg))
                 Divider().overlay(Theme.line)
-                row("Calorie Target", "\(user.dailyCalorieTarget) kcal")
+                row("Calorie Target", "\(user.dailyCalorieTarget) \(user.unitSystem.calorieUnit)")
                 Divider().overlay(Theme.line)
                 row("Goals", user.goals.map { $0.rawValue }.joined(separator: ", "))
             }

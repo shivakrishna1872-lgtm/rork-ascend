@@ -132,6 +132,43 @@ enum Sex: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+/// User-selected measurement system. Affects how heights, weights and
+/// calories are displayed throughout the app, and is passed to the AI so
+/// responses match the units the user prefers.
+enum UnitSystem: String, CaseIterable, Codable, Identifiable {
+    case metric = "Metric"
+    case imperial = "Imperial"
+    var id: String { rawValue }
+
+    var heightUnit: String { self == .metric ? "cm" : "in" }
+    var weightUnit: String { self == .metric ? "kg" : "lb" }
+    /// Metric nutrition labels use "kcal"; US labels use "cal" (food calorie).
+    var calorieUnit: String { self == .metric ? "kcal" : "cal" }
+
+    /// Format a cm value for the user.
+    func formatHeight(cm: Double) -> String {
+        switch self {
+        case .metric:
+            return "\(Int(cm.rounded())) cm"
+        case .imperial:
+            let totalInches = cm / 2.54
+            let feet = Int(totalInches / 12)
+            let inches = Int(totalInches.truncatingRemainder(dividingBy: 12).rounded())
+            // Carry-over (e.g. 11.6" rounds to 12")
+            if inches == 12 { return "\(feet + 1)' 0\"" }
+            return "\(feet)' \(inches)\""
+        }
+    }
+
+    /// Format a kg value for the user.
+    func formatWeight(kg: Double) -> String {
+        switch self {
+        case .metric:   return String(format: "%.1f kg", kg)
+        case .imperial: return String(format: "%.1f lb", kg * 2.2046226218)
+        }
+    }
+}
+
 enum AIPersonality: String, CaseIterable, Codable, Identifiable {
     case science = "Science-Based"
     case motivational = "Motivational"

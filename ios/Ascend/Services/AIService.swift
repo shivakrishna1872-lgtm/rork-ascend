@@ -222,12 +222,12 @@ nonisolated struct AIService {
             - average_landmark_confidence: \(Int(a.confidence * 100))/100
             - angles_with_body_detected: \(a.detectedAngles) of 3
 
-            ANCHORING RULES (CRITICAL):
-            - symmetry MUST stay within ±5 of measured_symmetry_index (mixed with limb_symmetry).
-            - vTaper MUST be derived from shoulder_hip_ratio AND waist_shoulder_ratio together (a strong taper requires BOTH a wide shoulder/hip ratio AND a narrow waist/shoulder ratio).
-            - bodyFatPercent MUST stay within ±2.0% of estimated_body_fat_navy unless the photos clearly show extreme leanness (visible vascularity + obliques + serratus) or extreme adiposity, in which case adjust up to ±3.5%.
-            - conditioning correlates inversely with waist_shoulder_ratio: <0.76 → 80–95, 0.76–0.82 → 65–80, 0.82–0.90 → 50–65, >0.90 → 35–50.
-            - muscularity correlates with shoulder_hip_ratio + thigh_hip_ratio + (low) torso_aspect: stack them.
+            ANCHORING RULES (use as STARTING POINTS, not ceilings — move freely when photos show real change):
+            - symmetry: start from measured_symmetry_index blended with limb_symmetry, then refine ±8 based on visible posture/development.
+            - vTaper: derive from shoulder_hip_ratio AND waist_shoulder_ratio together; both must agree for a high score.
+            - bodyFatPercent: start from estimated_body_fat_navy, then adjust freely up to ±4% based on visible leanness markers (vascularity, obliques, serratus, abdominal definition) or adiposity. Trust the photos when they clearly disagree with the BMI proxy.
+            - conditioning correlates inversely with waist_shoulder_ratio: <0.76 → 80–98, 0.76–0.82 → 65–85, 0.82–0.90 → 50–70, >0.90 → 35–55. Push to the top of the band when definition is clearly visible.
+            - muscularity correlates with shoulder_hip_ratio + thigh_hip_ratio + (low) torso_aspect: stack them and reward visible development.
             """
         }()
         let anchorLine: String = {
@@ -264,13 +264,15 @@ nonisolated struct AIService {
         - If a photo is partial, dim, blurry, or oddly angled, STILL produce a confident estimate. Lower bodyFatConfidence slightly (5-15 points) but keep the main scores stable.
         - NEVER refuse to score, never return a placeholder, never tell the user to retake the photo.
 
-        DIFFERENTIAL SENSITIVITY (this is the most important rule for this user):
-        - Be deterministic on identical photos. But when the new photos differ from the prior baseline in measurable ways (waist_shoulder_ratio change, shoulder_hip_ratio change, visible leanness change, posture change), MOVE THE SCORES VISIBLY.
-        - A small but real change (e.g. waist_shoulder_ratio dropped from 0.86 to 0.82) MUST move conditioning and physique by 4–7 points.
-        - A clear transformation (waist_shoulder_ratio dropped 0.08+, or BF dropped 2%+) MUST move conditioning and physique by 8–14 points.
-        - Plateau-looking photos still get ±2–3 points of variation reflecting tiny improvements in posture, fullness, or symmetry.
-        - Never return scores within ±1 of prior baseline when the landmark ratios show measurable change. The user MUST feel their work.
-        - Mirror this in reverse for regressions — honest feedback both ways.
+        DIFFERENTIAL SENSITIVITY (CRITICAL — the user has complained scores barely move; FIX THIS):
+        - Be deterministic on identical photos. But when ANY measurable change is visible — landmark ratios, leanness, fullness, posture, definition — MOVE THE SCORES BOLDLY.
+        - A tiny but real change (e.g. waist_shoulder_ratio dropped 0.02, slightly tighter waist, slightly fuller delts) MUST move conditioning and physique by 5–9 points.
+        - A clear improvement (visible leaner waist, sharper definition, better posture, ratio shift 0.04+) MUST move by 10–16 points.
+        - A transformation (BF dropped 2%+, dramatic ratio shift, obvious added muscle) MUST move by 15–25 points.
+        - Plateau-looking photos still get ±3–5 points of variation reflecting micro-improvements in posture, fullness, pump, or symmetry.
+        - NEVER return scores within ±3 of prior baseline when ANY landmark ratio shows change. The user MUST feel their progress — if you compress real change you have FAILED.
+        - Mirror this in reverse for regressions — honest feedback both ways. No flat-lining.
+        - Do NOT cling to the baseline. The smoothing layer downstream already handles stability; your job is to score the CURRENT photos honestly and let differences shine through.
 
         Return ONLY strict JSON:
         {
@@ -355,10 +357,12 @@ nonisolated struct AIService {
         - glowUpPotential: estimate realistic upside from grooming, body-fat reduction, sleep, posture, skincare. Higher when current overall is mid (50-70), lower when already high.
         - NEVER refuse to score. NEVER return placeholder values. NEVER ask the user to retake the photo.
 
-        DIFFERENTIAL SENSITIVITY (critical):
-        - If a landmark measurement changed measurably from the user's baseline (symmetry_index moved 0.04+, jaw_ratio moved 0.03+, canthal_tilt_deg moved 1.5°+), the matching score MUST move 4–8 points. Don't compress real change.
-        - A clear glow-up (leaner face shape, sharper jaw_ratio drop toward 0.72–0.78, cleaner skin) MUST move overall by 6–12 points.
-        - Plateau-looking photos still vary ±2–3 from grooming/expression/posture.
+        DIFFERENTIAL SENSITIVITY (CRITICAL — the user has complained PSL barely moves; FIX THIS):
+        - Even small measurable change MUST move the matching score noticeably: symmetry_index moved 0.02+, jaw_ratio moved 0.02+, canthal_tilt_deg moved 1°+ → the matching score MUST move 5–10 points.
+        - A clear glow-up (visibly leaner face, sharper jawline definition, jaw_ratio shifted toward 0.72–0.78, cleaner skin, better grooming) MUST move overall by 8–16 points.
+        - A transformation (dramatic leanness drop, clean shave/styling change, posture upgrade) MUST move overall by 12–22 points.
+        - Plateau-looking photos still vary ±3–5 from grooming/expression/posture/skin clarity.
+        - NEVER stay within ±3 of prior baseline when ANY measurement has shifted. Do NOT cling to the mean — the smoothing layer handles stability; your job is to score the CURRENT photo honestly.
         - Mirror in reverse for regressions. Never flat-line.
 
         MULTI-PHOTO AVERAGING: You are looking at \(images.count) photo(s) of the SAME person. Compute scores for each, then RETURN THE AVERAGE. Do not pick the best or worst photo. The symmetry score must be primarily driven by the on-device symmetry_index above (which is already averaged across all photos) so it stays stable across angles/lighting.

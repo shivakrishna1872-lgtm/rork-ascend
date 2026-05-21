@@ -497,6 +497,28 @@ final class MealEntry {
 }
 
 @Model
+final class LiftEntry {
+    var date: Date
+    /// Bench press 1RM in kilograms. 0 means not logged this session.
+    var benchKg: Double
+    /// Squat 1RM in kilograms. 0 means not logged this session.
+    var squatKg: Double
+    /// Deadlift 1RM in kilograms. 0 means not logged this session.
+    var deadliftKg: Double
+    var note: String
+
+    init(date: Date = .now, benchKg: Double = 0, squatKg: Double = 0, deadliftKg: Double = 0, note: String = "") {
+        self.date = date
+        self.benchKg = benchKg
+        self.squatKg = squatKg
+        self.deadliftKg = deadliftKg
+        self.note = note
+    }
+
+    var totalKg: Double { benchKg + squatKg + deadliftKg }
+}
+
+@Model
 final class Achievement {
     var key: String
     var title: String

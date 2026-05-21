@@ -47,5 +47,5 @@ struct RootView: View {
 #Preview {
     RootView()
         .environment(AppState())
-        .modelContainer(for: [UserProfile.self, PhysiqueScanRecord.self, FaceScanRecord.self, MealEntry.self, Achievement.self, FriendGroup.self, Friend.self], inMemory: true)
+        .modelContainer(for: [UserProfile.self, PhysiqueScanRecord.self, FaceScanRecord.self, MealEntry.self, Achievement.self, FriendGroup.self, Friend.self, LiftEntry.self], inMemory: true)
 }

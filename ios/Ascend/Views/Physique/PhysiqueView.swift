@@ -6,8 +6,10 @@ struct PhysiqueView: View {
     @Environment(\.modelContext) private var ctx
     @Environment(AppState.self) private var app
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var scans: [PhysiqueScanRecord]
+    @Query(sort: \LiftEntry.date, order: .reverse) private var lifts: [LiftEntry]
 
     @State private var showScanFlow = false
+    @State private var showLiftLog = false
     @State private var selected: PhysiqueScanRecord?
 
     var body: some View {
@@ -20,7 +22,9 @@ struct PhysiqueView: View {
                     bodyFatCard(latest).blurFadeIn(delay: 0.14)
                     bodyCompCard(latest).blurFadeIn(delay: 0.16)
                     radarCard(latest).blurFadeIn(delay: 0.18)
-                    strengthCard(latest).blurFadeIn(delay: 0.20)
+                    liftsCard(latest).blurFadeIn(delay: 0.19)
+                    if lifts.count >= 2 { liftsProgressCard().blurFadeIn(delay: 0.205) }
+                    strengthCard(latest).blurFadeIn(delay: 0.21)
                     archetypeCard(latest).blurFadeIn(delay: 0.22)
                     if scans.count >= 2 {
                         sparklineCard(scans).blurFadeIn(delay: 0.24)
@@ -54,6 +58,11 @@ struct PhysiqueView: View {
         .tabBarBottomInset()
         .sheet(isPresented: $showScanFlow) {
             PhysiqueScanFlow(user: user)
+        }
+        .sheet(isPresented: $showLiftLog) {
+            LiftLogSheet(user: user)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .sheet(item: $selected) { rec in
             PhysiqueResultsView(record: rec, isHistory: true)
@@ -478,6 +487,165 @@ struct PhysiqueView: View {
         let m = v.reduce(0, +) / Double(v.count)
         let std = sqrt(v.map { pow($0 - m, 2) }.reduce(0, +) / Double(v.count))
         return max(0, min(100, 100 - std * 2.2))
+    }
+
+    // MARK: - User-logged lifts (Bench / Squat / Deadlift)
+
+    private func liftsCard(_ rec: PhysiqueScanRecord) -> some View {
+        // Best (max) lift per movement across all entries so PRs always show.
+        let bestBench = lifts.map(\.benchKg).max() ?? 0
+        let bestSquat = lifts.map(\.squatKg).max() ?? 0
+        let bestDead  = lifts.map(\.deadliftKg).max() ?? 0
+        let total = bestBench + bestSquat + bestDead
+        let unit = user.unitSystem.weightUnit
+        let mul: Double = user.unitSystem == .imperial ? 2.2046226218 : 1
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Your Lifts".uppercased())
+                    .font(.system(size: 10, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                if total > 0 {
+                    Text(String(format: "Total %.0f %@", total * mul, unit))
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.accentGlow)
+                }
+            }
+            if lifts.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "dumbbell.fill")
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(Theme.accentGlow)
+                    Text("Log your bench, squat and deadlift to track real-world progress.")
+                        .font(.aetherBody).foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 14)
+            } else {
+                HStack(spacing: 10) {
+                    liftTile("Bench", value: bestBench * mul, unit: unit, icon: "figure.strengthtraining.functional")
+                    liftTile("Squat", value: bestSquat * mul, unit: unit, icon: "figure.cross.training")
+                    liftTile("Dead",  value: bestDead * mul,  unit: unit, icon: "figure.strengthtraining.traditional")
+                }
+                // Optional: progress vs AI projection
+                if rec.muscularityScore > 0 {
+                    let bf = max(3, min(45, rec.bodyFatPercent))
+                    let weight = max(40, user.weightKg)
+                    let lean = weight * (1 - bf / 100)
+                    let mus = rec.muscularityScore / 100
+                    let projTotal = lean * ((0.85 + mus * 0.85) + (1.10 + mus * 1.05) + (1.30 + mus * 1.20))
+                    let progress = projTotal > 0 ? min(1.0, total / projTotal) : 0
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("VS PROJECTED POTENTIAL")
+                                .font(.system(size: 9, weight: .semibold)).tracking(1.4)
+                                .foregroundStyle(Theme.textTertiary)
+                            Spacer()
+                            Text("\(Int(progress * 100))%")
+                                .font(.aetherMono).foregroundStyle(Theme.accentGlow)
+                        }
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Theme.line)
+                                Capsule()
+                                    .fill(LinearGradient(colors: [Theme.accent, Theme.accentGlow], startPoint: .leading, endPoint: .trailing))
+                                    .frame(width: max(4, geo.size.width * progress))
+                            }
+                        }.frame(height: 5)
+                    }
+                }
+            }
+            GhostButton(title: lifts.isEmpty ? "Add Lifts" : "Update Lifts", icon: "plus") {
+                showLiftLog = true
+            }
+        }
+        .padding(18)
+        .glassCard(radius: 20)
+    }
+
+    private func liftTile(_ label: String, value: Double, unit: String, icon: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.accentGlow)
+            Text(value > 0 ? String(format: "%.0f", value) : "—")
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(Theme.textPrimary)
+            Text("\(label.uppercased()) · \(unit.uppercased())")
+                .font(.system(size: 8, weight: .semibold)).tracking(1.2)
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.25)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line, lineWidth: 0.6))
+    }
+
+    private func liftsProgressCard() -> some View {
+        // Chronological (oldest → newest) total-lifted history for the trendline.
+        let chrono = lifts.reversed()
+        let totals: [Double] = chrono.map { $0.totalKg }
+        let mul: Double = user.unitSystem == .imperial ? 2.2046226218 : 1
+        let unit = user.unitSystem.weightUnit
+        let mn = totals.min() ?? 0
+        let mx = totals.max() ?? 1
+        let range = max(1, mx - mn)
+        let latest = totals.last ?? 0
+        let first = totals.first ?? latest
+        let delta = (latest - first) * mul
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Strength Progress".uppercased())
+                    .font(.system(size: 10, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                HStack(spacing: 4) {
+                    Image(systemName: delta >= 0 ? "arrow.up.right" : "arrow.down.right")
+                    Text(String(format: "%+.0f %@ over %d sessions", delta, unit, totals.count))
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(delta >= 0 ? Theme.good : Theme.bad)
+            }
+            GeometryReader { geo in
+                let stepX = totals.count > 1 ? geo.size.width / CGFloat(totals.count - 1) : geo.size.width
+                ZStack {
+                    Path { p in
+                        guard !totals.isEmpty else { return }
+                        p.move(to: CGPoint(x: 0, y: geo.size.height))
+                        for (i, v) in totals.enumerated() {
+                            let x = CGFloat(i) * stepX
+                            let y = geo.size.height - CGFloat((v - mn) / range) * geo.size.height
+                            p.addLine(to: CGPoint(x: x, y: y))
+                        }
+                        p.addLine(to: CGPoint(x: CGFloat(totals.count - 1) * stepX, y: geo.size.height))
+                        p.closeSubpath()
+                    }
+                    .fill(LinearGradient(colors: [Theme.accentGlow.opacity(0.32), Theme.accentGlow.opacity(0)], startPoint: .top, endPoint: .bottom))
+                    Path { p in
+                        for (i, v) in totals.enumerated() {
+                            let x = CGFloat(i) * stepX
+                            let y = geo.size.height - CGFloat((v - mn) / range) * geo.size.height
+                            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                            else { p.addLine(to: CGPoint(x: x, y: y)) }
+                        }
+                    }
+                    .stroke(Theme.accentGlow, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                }
+            }
+            .frame(height: 64)
+            HStack {
+                Text(String(format: "min %.0f %@", mn * mul, unit))
+                    .font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text(String(format: "now %.0f %@", latest * mul, unit))
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.accentGlow)
+                Spacer()
+                Text(String(format: "max %.0f %@", mx * mul, unit))
+                    .font(.system(size: 9)).foregroundStyle(Theme.textTertiary)
+            }
+        }
+        .padding(18)
+        .glassCard(radius: 20)
     }
 
     // MARK: - New: Strength projection

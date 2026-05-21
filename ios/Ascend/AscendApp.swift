@@ -14,7 +14,8 @@ struct AscendApp: App {
             MealEntry.self,
             Achievement.self,
             FriendGroup.self,
-            Friend.self
+            Friend.self,
+            LiftEntry.self
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {

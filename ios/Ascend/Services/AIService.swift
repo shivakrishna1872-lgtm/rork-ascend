@@ -187,7 +187,17 @@ nonisolated struct AIService {
 
         Output JSON only.
         """
-        return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
+        do {
+            return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
+        } catch let e as AIServiceError {
+            // Hard-fail conditions surface to the user.
+            if case .consentDenied = e { throw e }
+            if case .missingConfig = e { throw e }
+            // Transient AI failure (provider down, decode noise, network) → deterministic fallback
+            // computed from on-device pose anchors + user BMI. Never hallucinates: it is purely a
+            // measurement-driven estimate the user can re-run later.
+            return PhysiqueHeuristic.estimate(profile: profile, anchors: anchors)
+        }
     }
 
     func analyzeFace(images: [UIImage], measurements: FaceMeasurements?, sampleCount: Int = 1, consistency: Double = 0.5, history: ScoreHistory? = nil) async throws -> FaceAnalysis {
@@ -255,7 +265,13 @@ nonisolated struct AIService {
         }
         Output JSON only. Never insult.
         """
-        return try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
+        do {
+            return try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
+        } catch let e as AIServiceError {
+            if case .consentDenied = e { throw e }
+            if case .missingConfig = e { throw e }
+            return FaceHeuristic.estimate(measurements: measurements, consistency: consistency)
+        }
     }
 
     func analyzeMeal(description: String, image: UIImage?, unitSystem: String = "Metric") async throws -> MealAnalysis {
@@ -316,10 +332,16 @@ nonisolated struct AIService {
         }
         Output JSON only.
         """
-        if let image {
-            return try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
+        do {
+            if let image {
+                return try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
+            }
+            return try await callJSONText(prompt: prompt, as: MealAnalysis.self)
+        } catch let e as AIServiceError {
+            if case .consentDenied = e { throw e }
+            if case .missingConfig = e { throw e }
+            return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         }
-        return try await callJSONText(prompt: prompt, as: MealAnalysis.self)
     }
 
     func dailyInsight(profile: ProfileSnapshot, streak: Int, recentScansCount: Int, caloriesAdherence: Double) async throws -> DailyInsight {
@@ -499,6 +521,158 @@ nonisolated struct PhysiqueAnchors {
     let coverageY: Double           // 0..1
     let confidence: Double          // 0..1
     let detectedAngles: Int         // 0...3
+}
+
+// MARK: - Deterministic Fallbacks (used only if every AI model fails)
+//
+// These never hallucinate. Each one returns a conservative, measurement-anchored
+// estimate so the app keeps working at scale even when the AI provider is down,
+// rate-limited, returns malformed JSON, or hits 402/5xx. The output is marked low
+// confidence so users see it's an estimate, and they can re-run when AI returns.
+
+nonisolated enum PhysiqueHeuristic {
+    static func estimate(profile: ProfileSnapshot, anchors: PhysiqueAnchors?) -> PhysiqueAnalysis {
+        // Derive body fat from BMI + sex (Deurenberg formula, simplified).
+        let h = max(1.2, profile.heightCm / 100)
+        let bmi = profile.weightKg / (h * h)
+        let sexAdj: Double = profile.sex.lowercased().contains("female") ? 5.4 : 0
+        var bf = 1.20 * bmi + 0.23 * Double(profile.age) - 16.2 + sexAdj
+        bf = max(6, min(38, bf))
+
+        // Symmetry / vTaper from pose anchors when present, otherwise neutral.
+        let symmetry = max(40, min(85, (anchors?.symmetry ?? 0.62) * 100))
+        let swRatio = anchors?.shoulderWaistRatio ?? 1.35
+        let vTaper = max(35, min(85, (swRatio - 1.0) * 110))
+
+        // Muscularity / conditioning from BMI band + bf band.
+        let muscularity: Double = {
+            switch bmi {
+            case ..<19:  return 45
+            case 19..<22: return 55
+            case 22..<26: return 65
+            case 26..<29: return 60
+            default:      return 52
+            }
+        }()
+        let conditioning = max(30, min(85, 95 - bf * 1.6))
+        let physique = (symmetry + muscularity + conditioning + vTaper) / 4
+
+        let archetype: Archetype = {
+            if vTaper > 70 { return .vTaper }
+            if conditioning > 70 && muscularity > 60 { return .leanAthletic }
+            if muscularity > 65 { return .powerBuild }
+            return .balanced
+        }()
+
+        return PhysiqueAnalysis(
+            physiqueScore: physique,
+            symmetry: symmetry,
+            muscularity: muscularity,
+            conditioning: conditioning,
+            vTaper: vTaper,
+            bodyFatPercent: bf,
+            // Capped low so the UI shows it's an estimate, not an AI reading.
+            bodyFatConfidence: min(35, (anchors?.confidence ?? 0.4) * 60),
+            archetype: archetype.rawValue,
+            insight: "Offline estimate from your measurements — re-run when AI is available for a full read.",
+            recommendations: [
+                "Re-run the scan in a moment for a full AI breakdown.",
+                "Stay consistent with protein at ~1.8–2.2 g/kg bodyweight.",
+                "Two compound strength sessions per week protect baseline muscle."
+            ]
+        )
+    }
+}
+
+nonisolated enum FaceHeuristic {
+    static func estimate(measurements: FaceMeasurements?, consistency: Double) -> FaceAnalysis {
+        guard let m = measurements else {
+            return FaceAnalysis(overall: 55, symmetry: 55, jawline: 55, thirds: 55,
+                                canthalTilt: 55, eyeSpacing: 55, glowUpPotential: 60,
+                                insight: "Offline estimate — re-run when AI is available.",
+                                recommendations: [
+                                    "Re-run the scan in a moment for a full AI read.",
+                                    "Hydration, sleep, and posture move scores fastest.",
+                                    "Soft front lighting with a neutral expression is ideal."
+                                ],
+                                hairstyles: [])
+        }
+        let symmetry = max(35, min(92, m.symmetry * 100))
+        let thirds = max(40, min(92, m.thirds * 100))
+        // canthal tilt: -2° ≈ 45, 0° ≈ 62, +4° ≈ 80, +8° ≈ 95
+        let canthal = max(30, min(95, 62 + m.canthalTiltDeg * 4.5))
+        // eye spacing: ideal ratio ≈ 1.0
+        let eye = max(35, min(92, 90 - abs(m.eyeSpacingRatio - 1.0) * 70))
+        // jaw: ideal jaw ratio 0.70–0.80
+        let jaw = max(35, min(92, 92 - abs(m.jawRatio - 0.75) * 160))
+        let overall = symmetry * 0.25 + jaw * 0.25 + thirds * 0.15 + canthal * 0.15 + eye * 0.10 + 60 * 0.10
+        let glow = max(40, min(95, 100 - overall * 0.55))
+        return FaceAnalysis(
+            overall: overall,
+            symmetry: symmetry,
+            jawline: jaw,
+            thirds: thirds,
+            canthalTilt: canthal,
+            eyeSpacing: eye,
+            glowUpPotential: glow,
+            insight: "Offline estimate from on-device landmarks — re-run when AI is available.",
+            recommendations: [
+                "Re-run the analysis in a moment for full AI insights.",
+                "Skin, hydration and sleep have the largest short-term effect.",
+                "Front-facing photo with even lighting boosts accuracy."
+            ],
+            hairstyles: []
+        )
+    }
+}
+
+nonisolated enum MealHeuristic {
+    /// Conservative macros from keyword matching — deliberately under-estimates rather than
+    /// invents numbers, and labels itself as an estimate so users can edit.
+    static func estimate(description: String, hasImage: Bool, unitSystem: String) -> MealAnalysis {
+        let lower = description.lowercased()
+        let name: String = description.isEmpty ? "Meal" : description
+            .split(separator: "\n").first.map(String.init) ?? "Meal"
+
+        // Tiny rule-based table. If nothing matches we return a sensible average meal.
+        let table: [(keyword: String, cal: Int, p: Int, c: Int, f: Int, kind: String)] = [
+            ("salad",       350, 25, 18, 18, "salad"),
+            ("burrito",     680, 30, 75, 28, "bowl"),
+            ("bowl",        560, 35, 55, 20, "bowl"),
+            ("pizza",       720, 28, 80, 30, "pizza"),
+            ("pasta",       620, 22, 90, 18, "pasta"),
+            ("sandwich",    520, 28, 55, 20, "sandwich"),
+            ("wrap",        500, 28, 50, 20, "sandwich"),
+            ("burger",      720, 35, 55, 38, "sandwich"),
+            ("chicken",     420, 38, 30, 14, "plate"),
+            ("steak",       560, 45, 12, 36, "plate"),
+            ("fish",        380, 35, 18, 16, "plate"),
+            ("rice",        480, 18, 75, 10, "bowl"),
+            ("eggs",        320, 22, 6, 22,  "plate"),
+            ("oatmeal",     360, 14, 55, 9,  "bowl"),
+            ("yogurt",      220, 18, 25, 5,  "snack"),
+            ("shake",       300, 30, 30, 6,  "drink"),
+            ("smoothie",    280, 14, 45, 5,  "drink"),
+            ("soup",        260, 14, 28, 9,  "soup"),
+            ("sushi",       520, 24, 70, 14, "plate"),
+            ("taco",        480, 22, 45, 22, "plate"),
+            ("snack",       180, 5, 22, 8,   "snack")
+        ]
+        let match = table.first { lower.contains($0.keyword) }
+        let (cal, p, c, f, kind) = match.map { ($0.cal, $0.p, $0.c, $0.f, $0.kind) }
+                                        ?? (500, 25, 50, 20, "plate")
+        return MealAnalysis(
+            name: name.capitalized,
+            dishType: kind,
+            ingredients: [],
+            calories: cal,
+            proteinG: p,
+            carbsG: c,
+            fatsG: f,
+            confidence: hasImage ? 35 : 30,
+            note: "Offline estimate — tap to edit, or re-run when AI is back online."
+        )
+    }
 }
 
 nonisolated struct ProfileSnapshot {

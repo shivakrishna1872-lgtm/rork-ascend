@@ -208,16 +208,10 @@ struct CalAIView: View {
 
     @ViewBuilder
     private func thumb(for meal: MealEntry) -> some View {
-        if let data = meal.imageData, let img = UIImage(data: data) {
-            Color.clear
-                .frame(width: 44, height: 44)
-                .overlay { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill).allowsHitTesting(false) }
-                .clipShape(.rect(cornerRadius: 10))
-        } else {
-            RoundedRectangle(cornerRadius: 10).fill(Theme.accent.opacity(0.15))
-                .frame(width: 44, height: 44)
-                .overlay { Image(systemName: "fork.knife").foregroundStyle(Theme.accentGlow) }
-        }
+        // Meal photos are intentionally not retained — show an icon placeholder.
+        RoundedRectangle(cornerRadius: 10).fill(Theme.accent.opacity(0.15))
+            .frame(width: 44, height: 44)
+            .overlay { Image(systemName: "fork.knife").foregroundStyle(Theme.accentGlow) }
     }
 }
 
@@ -481,7 +475,7 @@ struct MealLogSheet: View {
             carbsG: r.carbsG,
             fatsG: r.fatsG,
             note: r.note,
-            imageData: image?.jpegData(compressionQuality: 0.6)
+            imageData: nil
         )
         ctx.insert(meal)
         app.bumpStreakIfNeeded(user)

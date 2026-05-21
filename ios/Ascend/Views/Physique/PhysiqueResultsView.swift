@@ -46,16 +46,6 @@ struct PhysiqueResultsView: View {
                         .transition(.scale.combined(with: .opacity))
                     }
 
-                    if revealStep >= 3 {
-                        // Side-by-side photos
-                        HStack(spacing: 10) {
-                            anglePhoto(record.frontImageData, "Front")
-                            anglePhoto(record.sideImageData, "Side")
-                            anglePhoto(record.backImageData, "Back")
-                        }
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    }
-
                     if revealStep >= 4 {
                         metricsGrid
                             .transition(.opacity.combined(with: .move(edge: .bottom)))

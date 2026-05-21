@@ -949,7 +949,7 @@ struct PhysiqueView: View {
                     Haptics.tap(); selected = rec
                 } label: {
                     HStack(spacing: 14) {
-                        timelineThumb(rec.frontImageData)
+                        timelineThumb(nil)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(rec.date.formatted(date: .abbreviated, time: .omitted))
                                 .font(.aetherCaption).foregroundStyle(Theme.textTertiary)

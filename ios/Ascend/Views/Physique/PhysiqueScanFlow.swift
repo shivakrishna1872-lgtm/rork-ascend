@@ -399,9 +399,9 @@ struct PhysiqueScanFlow: View {
                         "Soft, even lighting on the body works best."
                     ],
                     insight: "No body detected in your photos — add clearer shots showing your physique to score.",
-                    frontImageData: f.jpegData(compressionQuality: 0.7),
-                    sideImageData: s.jpegData(compressionQuality: 0.7),
-                    backImageData: b.jpegData(compressionQuality: 0.7)
+                    frontImageData: nil,
+                    sideImageData: nil,
+                    backImageData: nil
                 )
                 ctx.insert(zero)
                 try? ctx.save()
@@ -489,9 +489,9 @@ struct PhysiqueScanFlow: View {
                 archetypeRaw: analysis.archetype,
                 recommendations: analysis.recommendations,
                 insight: analysis.insight,
-                frontImageData: f.jpegData(compressionQuality: 0.7),
-                sideImageData: s.jpegData(compressionQuality: 0.7),
-                backImageData: b.jpegData(compressionQuality: 0.7)
+                frontImageData: nil,
+                sideImageData: nil,
+                backImageData: nil
             )
             ctx.insert(record)
             try? ctx.save()

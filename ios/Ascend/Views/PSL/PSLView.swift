@@ -555,7 +555,6 @@ struct FaceScanSheet: View {
             // GUARD: no face found in any photo → return all zeros, never call the AI.
             if samples.isEmpty {
                 try? await Task.sleep(for: .seconds(0.6))
-                let preview = imgs.first?.jpegData(compressionQuality: 0.7)
                 let zero = FaceScanRecord(
                     overallScore: 0,
                     symmetry: 0,
@@ -571,7 +570,7 @@ struct FaceScanSheet: View {
                     ],
                     hairstyles: [],
                     insight: "No face detected in your photos — add a clear front-facing selfie to score.",
-                    imageData: preview
+                    imageData: nil
                 )
                 ctx.insert(zero)
                 try? ctx.save()
@@ -600,8 +599,7 @@ struct FaceScanSheet: View {
             // 4) Blend long-term rolling history for cross-session stability.
             let r = FaceSmoothing.smooth(raw: rawAnalysis, priors: priorFaces)
             try? await Task.sleep(for: .seconds(1.0))
-            // Save the first (sharpest) photo as the record preview.
-            let preview = imgs.first?.jpegData(compressionQuality: 0.7)
+            // Photos are intentionally not retained — only the derived scores.
             let record = FaceScanRecord(
                 overallScore: r.overall,
                 symmetry: r.symmetry,
@@ -613,7 +611,7 @@ struct FaceScanSheet: View {
                 recommendations: r.recommendations,
                 hairstyles: r.hairstyles,
                 insight: r.insight,
-                imageData: preview
+                imageData: nil
             )
             ctx.insert(record)
             app.bumpStreakIfNeeded(user)

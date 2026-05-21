@@ -1,25 +1,48 @@
 import SwiftUI
-import SwiftData
 
+/// Backend-backed detail screen for a single circle. Polls every 4s while
+/// visible so rank changes from other members show up live.
 struct GroupDetailView: View {
-    @Bindable var group: FriendGroup
+    let circleId: String
     let user: UserProfile
-    @Environment(\.modelContext) private var ctx
+
     @Environment(\.dismiss) private var dismiss
-    @State private var showInvite = false
-    @State private var showRename = false
-    @State private var renameDraft = ""
-    @State private var pickedAccent: GroupAccent = .steel
+    @State private var circle: RemoteCircle? = nil
+    @State private var loading = true
+    @State private var loadError: String? = nil
+    @State private var refreshTask: Task<Void, Never>? = nil
+    @State private var codeCopied = false
+    @State private var showLeaveConfirm = false
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                header.cinematicReveal(delay: 0.02)
-                actions.cinematicReveal(delay: 0.08)
-                leaderboard.cinematicReveal(delay: 0.16)
-                accentPicker.cinematicReveal(delay: 0.24)
-                dangerZone.cinematicReveal(delay: 0.32)
-                Color.clear.frame(height: 40)
+                if let c = circle {
+                    header(for: c).cinematicReveal(delay: 0.02)
+                    inviteBlock(for: c).cinematicReveal(delay: 0.08)
+                    leaderboard(for: c).cinematicReveal(delay: 0.16)
+                    dangerZone(for: c).cinematicReveal(delay: 0.24)
+                    Color.clear.frame(height: 40)
+                } else if loading {
+                    ProgressView().tint(Theme.textPrimary)
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                } else if let err = loadError {
+                    VStack(spacing: 10) {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(Theme.warn)
+                        Text(err).font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                            .multilineTextAlignment(.center)
+                        GhostButton(title: "Retry", icon: "arrow.clockwise") {
+                            Task { await load() }
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
+                    .glassCard(radius: 18)
+                }
             }
             .padding(.horizontal, 20).padding(.top, 12)
         }
@@ -27,137 +50,167 @@ struct GroupDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    renameDraft = group.name
-                    showRename = true
-                } label: {
-                    Image(systemName: "pencil")
+                if let c = circle {
+                    ShareLink(item: inviteURL(for: c.code),
+                              message: Text("Join my Ascend circle \"\(c.name)\" with code \(c.code)")) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
                 }
             }
         }
-        .sheet(isPresented: $showInvite) {
-            InviteSheet(group: group, inviterName: user.name)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .alert("Rename Circle", isPresented: $showRename) {
-            TextField("Name", text: $renameDraft)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty { group.name = trimmed; try? ctx.save() }
-            }
-        }
-        .onAppear { pickedAccent = group.accent }
+        .task { await load(); startPolling() }
+        .refreshable { await load() }
+        .onDisappear { refreshTask?.cancel(); refreshTask = nil }
     }
 
-    private var header: some View {
-        VStack(spacing: 14) {
+    // MARK: - Sections
+
+    private func header(for c: RemoteCircle) -> some View {
+        let accent = (GroupAccent(rawValue: c.accent) ?? .steel).color
+        return VStack(spacing: 14) {
             ZStack {
                 Circle()
                     .fill(
                         AngularGradient(
-                            colors: [group.accent.color.opacity(0.4), group.accent.color, .white.opacity(0.9), group.accent.color],
+                            colors: [accent.opacity(0.4), accent, .white.opacity(0.9), accent],
                             center: .center
                         )
                     )
                     .frame(width: 72, height: 72)
-                    .shadow(color: group.accent.color.opacity(0.5), radius: 18)
-                Text(group.name.prefix(1).uppercased())
+                    .shadow(color: accent.opacity(0.5), radius: 18)
+                Text(c.name.prefix(1).uppercased())
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(.black.opacity(0.75))
             }
-            .depthShimmer()
-            Text(group.name)
+            Text(c.name)
                 .font(.aetherTitle)
                 .foregroundStyle(Theme.textPrimary)
-            Text("\(group.members.filter { !$0.isPending }.count + 1) members · code \(group.inviteCode)")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.textSecondary)
+            HStack(spacing: 6) {
+                Circle().fill(Theme.good).frame(width: 6, height: 6)
+                    .shadow(color: Theme.good.opacity(0.7), radius: 3)
+                Text("LIVE · \(c.memberCount) member\(c.memberCount == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .bold)).tracking(1.5)
+                    .foregroundStyle(Theme.textSecondary)
+            }
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
     }
 
-    private var actions: some View {
-        HStack(spacing: 10) {
+    private func inviteBlock(for c: RemoteCircle) -> some View {
+        VStack(spacing: 14) {
+            Text("INVITE CODE")
+                .font(.system(size: 10, weight: .bold)).tracking(1.8)
+                .foregroundStyle(Theme.textTertiary)
+
             Button {
-                Haptics.tap(); showInvite = true
+                UIPasteboard.general.string = c.code
+                Haptics.success()
+                withAnimation(.snappy) { codeCopied = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                    withAnimation { codeCopied = false }
+                }
             } label: {
-                HStack {
-                    Image(systemName: "person.crop.circle.badge.plus")
-                    Text("Invite")
+                HStack(spacing: 12) {
+                    Text(c.code)
+                        .font(.system(size: 36, weight: .bold, design: .monospaced))
+                        .tracking(8)
+                        .foregroundStyle(Theme.textPrimary)
+                    Image(systemName: codeCopied ? "checkmark.circle.fill" : "doc.on.doc.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(codeCopied ? Theme.good : Theme.textTertiary)
+                        .contentTransition(.symbolEffect(.replace))
                 }
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Theme.bg)
-                .frame(maxWidth: .infinity).frame(height: 48)
-                .background(RoundedRectangle(cornerRadius: 14).fill(.white.opacity(0.95)))
-            }.buttonStyle(.plain)
-
-            ShareLink(item: group.inviteURL, message: Text("Join my Ascend circle \"\(group.name)\" with code \(group.inviteCode)")) {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 48, height: 48)
-                    .foregroundStyle(Theme.textPrimary)
-                    .glassCard(radius: 14)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(RoundedRectangle(cornerRadius: 18).fill(Color.black.opacity(0.3)))
+                .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.lineStrong, lineWidth: 0.8))
             }
-            .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
-        }
-    }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Invite code \(c.code). Tap to copy.")
 
-    private var leaderboard: some View {
-        let ranked = group.rankedMembers(currentUserXP: user.xp, currentUserName: user.name)
-        return VStack(spacing: 10) {
-            SectionHeader(title: "Private Leaderboard")
-                .padding(.horizontal, 2)
-
-            ForEach(Array(ranked.enumerated()), id: \.element.id) { idx, m in
-                rankRow(rank: idx + 1, member: m)
-            }
-
-            let pending = group.members.filter { $0.isPending }
-            if !pending.isEmpty {
-                SectionHeader(title: "Pending Invites")
-                    .padding(.horizontal, 2).padding(.top, 8)
-                ForEach(pending) { m in
-                    HStack(spacing: 12) {
-                        avatar(for: m, color: group.accent.color)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(m.displayName).font(.system(size: 14, weight: .semibold))
-                            if !m.phoneOrEmail.isEmpty {
-                                Text(m.phoneOrEmail).font(.system(size: 11))
-                                    .foregroundStyle(Theme.textTertiary).lineLimit(1)
-                            }
-                        }
-                        Spacer()
-                        Button {
-                            ctx.delete(m); try? ctx.save(); Haptics.tap()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                        .buttonStyle(.plain)
+            HStack(spacing: 10) {
+                ShareLink(item: inviteURL(for: c.code),
+                          message: Text("Join my Ascend circle \"\(c.name)\" with code \(c.code)")) {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share invite")
                     }
-                    .padding(12)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.bg)
+                    .frame(maxWidth: .infinity).frame(height: 50)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(.white.opacity(0.95)))
+                }
+                .simultaneousGesture(TapGesture().onEnded { Haptics.medium() })
+
+                Button {
+                    UIPasteboard.general.string = c.code
+                    Haptics.success()
+                    withAnimation(.snappy) { codeCopied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        withAnimation { codeCopied = false }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: "doc.on.doc")
+                        Text("Copy")
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(maxWidth: .infinity).frame(height: 50)
                     .glassCard(radius: 14)
                 }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity)
+        .glassCard(radius: 22)
+    }
+
+    private func leaderboard(for c: RemoteCircle) -> some View {
+        VStack(spacing: 10) {
+            SectionHeader(title: "Private Leaderboard", trailing: "Live")
+                .padding(.horizontal, 2)
+            ForEach(c.members) { m in
+                rankRow(member: m, accent: (GroupAccent(rawValue: c.accent) ?? .steel).color)
             }
         }
     }
 
-    private func rankRow(rank: Int, member: FriendGroup.RankedMember) -> some View {
-        HStack(spacing: 14) {
-            Text("#\(rank)")
+    private func rankRow(member: RankedUser, accent: Color) -> some View {
+        let tier = Tier(rawValue: member.tier) ?? Tier.forXP(member.xp)
+        return HStack(spacing: 14) {
+            Text("#\(member.rank)")
                 .font(.system(size: 14, weight: .bold, design: .rounded))
-                .foregroundStyle(rank <= 3 ? member.tier.color : Theme.textTertiary)
+                .foregroundStyle(member.rank <= 3 ? tier.color : Theme.textTertiary)
                 .frame(width: 36, alignment: .leading)
-            TierEmblem(tier: member.tier, size: 32)
+            TierEmblem(tier: tier, size: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(member.name).font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Text(member.tier.title).font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(member.tier.color)
+                HStack(spacing: 6) {
+                    Text(member.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    if member.isMe ?? false {
+                        Text("YOU").font(.system(size: 8, weight: .bold)).tracking(1.4)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(accent.opacity(0.3)))
+                            .foregroundStyle(Theme.textPrimary)
+                    }
+                }
+                HStack(spacing: 6) {
+                    Text(tier.title).font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(tier.color)
+                    if member.streak > 0 {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Theme.warn)
+                        Text("\(member.streak)").font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
@@ -171,64 +224,87 @@ struct GroupDetailView: View {
         .padding(12)
         .background {
             RoundedRectangle(cornerRadius: 14)
-                .fill(member.isMe ? group.accent.color.opacity(0.14) : Theme.surface.opacity(0.5))
+                .fill((member.isMe ?? false) ? accent.opacity(0.14) : Theme.surface.opacity(0.5))
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(member.isMe ? group.accent.color.opacity(0.55) : Theme.line,
-                              lineWidth: member.isMe ? 1 : 0.5)
+                .strokeBorder((member.isMe ?? false) ? accent.opacity(0.55) : Theme.line,
+                              lineWidth: (member.isMe ?? false) ? 1 : 0.5)
         }
     }
 
-    private func avatar(for m: Friend, color: Color) -> some View {
-        ZStack {
-            Circle().fill(color.opacity(0.3))
-            Text(m.initials).font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Theme.textPrimary)
+    @ViewBuilder
+    private func dangerZone(for c: RemoteCircle) -> some View {
+        VStack(spacing: 10) {
+            if c.isOwner {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack { Image(systemName: "trash"); Text("Delete circle") }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.bad)
+                        .frame(maxWidth: .infinity).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.bad.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button(role: .destructive) {
+                    showLeaveConfirm = true
+                } label: {
+                    HStack { Image(systemName: "rectangle.portrait.and.arrow.right"); Text("Leave circle") }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.bad)
+                        .frame(maxWidth: .infinity).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.bad.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .frame(width: 30, height: 30)
-    }
-
-    private var accentPicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Accent")
-            HStack(spacing: 10) {
-                ForEach(GroupAccent.allCases) { accent in
-                    Button {
-                        Haptics.tap()
-                        withAnimation(.snappy) {
-                            pickedAccent = accent
-                            group.accentRaw = accent.rawValue
-                            try? ctx.save()
-                        }
-                    } label: {
-                        Circle()
-                            .fill(accent.color)
-                            .frame(width: 30, height: 30)
-                            .overlay(Circle().strokeBorder(accent == pickedAccent ? .white : .white.opacity(0.2),
-                                                            lineWidth: accent == pickedAccent ? 2 : 0.6))
-                            .shadow(color: accent.color.opacity(0.5), radius: accent == pickedAccent ? 8 : 0)
-                    }
-                    .buttonStyle(.plain)
+        .confirmationDialog("Leave this circle?", isPresented: $showLeaveConfirm, titleVisibility: .visible) {
+            Button("Leave", role: .destructive) {
+                Task {
+                    try? await BackendService.shared.leaveCircle(id: c.id)
+                    Haptics.medium(); dismiss()
                 }
             }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this circle for everyone?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    try? await BackendService.shared.deleteCircle(id: c.id)
+                    Haptics.medium(); dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
-    private var dangerZone: some View {
-        Button(role: .destructive) {
-            Haptics.medium()
-            ctx.delete(group)
-            try? ctx.save()
-            dismiss()
-        } label: {
-            HStack {
-                Image(systemName: "trash")
-                Text("Delete Circle")
-            }
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(Theme.bad)
-            .frame(maxWidth: .infinity).frame(height: 46)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.bad.opacity(0.12)))
+    // MARK: - Data
+
+    private func load() async {
+        do {
+            let c = try await BackendService.shared.fetchCircle(id: circleId)
+            withAnimation(.smooth(duration: 0.3)) { circle = c; loadError = nil }
+        } catch {
+            loadError = (error as? BackendError)?.errorDescription
+                ?? "Couldn't load this circle."
         }
-        .buttonStyle(.plain)
+        loading = false
+    }
+
+    private func startPolling() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                if Task.isCancelled { break }
+                await load()
+            }
+        }
+    }
+
+    private func inviteURL(for code: String) -> URL {
+        let base = Config.EXPO_PUBLIC_RORK_FUNCTIONS_URL
+            .trimmingCharacters(in: .init(charactersIn: "/"))
+        return URL(string: "\(base)/join/\(code)") ?? URL(string: "https://ascend.app/join/\(code)")!
     }
 }

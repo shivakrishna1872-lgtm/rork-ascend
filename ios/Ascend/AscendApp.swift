@@ -4,6 +4,7 @@ import SwiftData
 @main
 struct AscendApp: App {
     @State private var appState = AppState()
+    @State private var deepLink = DeepLinkRouter.shared
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -32,6 +33,16 @@ struct AscendApp: App {
                 .environment(appState)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                // Custom URL scheme: ascend://join/CODE
+                .onOpenURL { url in
+                    _ = deepLink.handle(url: url)
+                }
+                // Universal link: https://…/join/CODE
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    if let url = activity.webpageURL {
+                        _ = deepLink.handle(url: url)
+                    }
+                }
         }
         .modelContainer(sharedModelContainer)
     }

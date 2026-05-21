@@ -1,28 +1,28 @@
 import SwiftUI
 import SwiftData
 
+/// Backend-backed Circles tab. Server is the source of truth; we cache
+/// the most recent fetch in @State and poll every 5s while visible.
 struct CirclesView: View {
     let user: UserProfile
-    @Environment(\.modelContext) private var ctx
-    @Query(sort: \FriendGroup.createdAt, order: .reverse) private var groups: [FriendGroup]
 
     @State private var mode: Mode = .circles
-    @State private var globalMetric: GlobalMetric = .physique
+    @State private var circles: [RemoteCircle] = []
+    @State private var loading = true
+    @State private var loadError: String? = nil
+    @State private var refreshTask: Task<Void, Never>? = nil
+
     @State private var showCreate = false
     @State private var showJoin = false
     @State private var newName = ""
     @State private var newAccent: GroupAccent = .steel
     @State private var joinCode = ""
-    @State private var joinError: String?
-    @State private var path = NavigationPath()
-    @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var scans: [PhysiqueScanRecord]
-    @Query(sort: \FaceScanRecord.date, order: .reverse) private var faces: [FaceScanRecord]
+    @State private var joinError: String? = nil
+    @State private var joining = false
+    @State private var creating = false
 
-    enum GlobalMetric: String, CaseIterable, Identifiable {
-        case physique = "Physique"
-        case psl = "PSL"
-        var id: String { rawValue }
-    }
+    @State private var path = NavigationPath()
+    @State private var deepLink = DeepLinkRouter.shared
 
     enum Mode: String, CaseIterable, Identifiable {
         case circles = "Circles"
@@ -36,27 +36,37 @@ struct CirclesView: View {
                 VStack(spacing: 18) {
                     header.cinematicReveal(delay: 0)
                     segmented.cinematicReveal(delay: 0.06)
-
                     if mode == .circles {
                         circlesContent
                     } else {
-                        globalContent
+                        GlobalRankingsView()
                     }
-
                 }
                 .padding(.horizontal, 20).padding(.top, 12)
             }
             .scrollIndicators(.hidden)
             .tabBarBottomInset()
-            .navigationDestination(for: FriendGroup.ID.self) { id in
-                if let g = groups.first(where: { $0.id == id }) {
-                    GroupDetailView(group: g, user: user)
-                }
+            .refreshable { await loadCircles() }
+            .navigationDestination(for: String.self) { circleId in
+                GroupDetailView(circleId: circleId, user: user)
             }
             .sheet(isPresented: $showCreate) { createSheet }
-            .sheet(isPresented: $showJoin) { joinSheet }
+            .sheet(isPresented: $showJoin, onDismiss: { joinCode = ""; joinError = nil }) { joinSheet }
         }
         .tint(Theme.accent)
+        .task {
+            await syncUserOnce()
+            await loadCircles()
+            startPolling()
+            consumePendingDeepLinkIfAny()
+        }
+        .onDisappear { refreshTask?.cancel(); refreshTask = nil }
+        .onChange(of: deepLink.pendingJoinCode) { _, _ in
+            consumePendingDeepLinkIfAny()
+        }
+        .onChange(of: user.xp) { _, _ in
+            Task { await syncUserOnce() }
+        }
     }
 
     // MARK: - Header & segmented
@@ -72,9 +82,7 @@ struct CirclesView: View {
             }
             Spacer()
             HStack(spacing: 8) {
-                circleIconButton(icon: "qrcode.viewfinder") {
-                    showJoin = true
-                }
+                circleIconButton(icon: "arrow.right.circle") { showJoin = true }
                 circleIconButton(icon: "plus") {
                     newName = ""; newAccent = .steel; showCreate = true
                 }
@@ -119,35 +127,181 @@ struct CirclesView: View {
         .glassCard(radius: 14)
     }
 
-    // MARK: - Circles tab content
+    // MARK: - Circles content
 
     @ViewBuilder
     private var circlesContent: some View {
-        let pendingCount = groups.flatMap(\.members).filter { $0.isPending }.count
-
-        if pendingCount > 0 {
-            HStack(spacing: 10) {
-                Image(systemName: "envelope.badge.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Theme.warn)
-                Text("\(pendingCount) pending invite\(pendingCount == 1 ? "" : "s")")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .glassCard(radius: 14)
-            .cinematicReveal(delay: 0.12)
-        }
-
-        if groups.isEmpty {
+        if loading && circles.isEmpty {
+            ForEach(0..<2, id: \.self) { i in skeletonCircle.cinematicReveal(delay: 0.10 + Double(i) * 0.06) }
+        } else if let err = loadError, circles.isEmpty {
+            errorCard(err)
+        } else if circles.isEmpty {
             emptyState.cinematicReveal(delay: 0.12)
         } else {
-            ForEach(Array(groups.enumerated()), id: \.element.id) { idx, g in
-                groupCard(g).cinematicReveal(delay: 0.12 + Double(idx) * 0.05)
+            ForEach(Array(circles.enumerated()), id: \.element.id) { idx, c in
+                Button {
+                    Haptics.tap(); path.append(c.id)
+                } label: { circleCard(c) }
+                .buttonStyle(.plain)
+                .cinematicReveal(delay: 0.12 + Double(min(idx, 6)) * 0.05)
             }
         }
     }
+
+    private func circleCard(_ c: RemoteCircle) -> some View {
+        let accent = GroupAccent(rawValue: c.accent) ?? .steel
+        let myUserId = BackendService.shared.currentUserId
+        let myRank = c.members.first(where: { ($0.isMe ?? false) || $0.id == myUserId })?.rank ?? 0
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CIRCLE").font(.system(size: 9, weight: .bold)).tracking(2)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(c.name).font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+                Spacer()
+                avatarFan(for: c, accent: accent)
+            }
+
+            HStack(spacing: 12) {
+                statChip(label: "Members", value: "\(c.memberCount)")
+                statChip(label: "Your rank", value: myRank > 0 ? "#\(myRank)" : "—")
+                inviteChip(code: c.code)
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+                Text("Long-press code to copy")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                ShareLink(item: inviteURL(for: c.code),
+                          message: Text(shareMessage(for: c))) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share")
+                    }
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                    .overlay(Capsule().strokeBorder(Theme.lineStrong, lineWidth: 0.5))
+                }
+                .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
+            }
+        }
+        .padding(18)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Theme.surface.opacity(0.55))
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.ultraThinMaterial).opacity(0.35)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [accent.color.opacity(0.22), .clear],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
+                    )
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(accent.color.opacity(0.35), lineWidth: 0.8)
+        )
+        .clipShape(.rect(cornerRadius: 22))
+    }
+
+    private func statChip(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 8, weight: .bold)).tracking(1.4)
+                .foregroundStyle(Theme.textTertiary)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Theme.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.25)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 0.5))
+    }
+
+    private func inviteChip(code: String) -> some View {
+        Button {
+            UIPasteboard.general.string = code
+            Haptics.success()
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CODE")
+                    .font(.system(size: 8, weight: .bold)).tracking(1.4)
+                    .foregroundStyle(Theme.textTertiary)
+                HStack(spacing: 4) {
+                    Text(code)
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .tracking(1.5)
+                        .foregroundStyle(Theme.textPrimary)
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.accent.opacity(0.18)))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.accent.opacity(0.4), lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = code
+                Haptics.success()
+            } label: {
+                Label("Copy Code", systemImage: "doc.on.doc")
+            }
+            ShareLink(item: inviteURL(for: code),
+                      message: Text("Join my Ascend circle with code \(code)")) {
+                Label("Share Invite", systemImage: "square.and.arrow.up")
+            }
+        }
+    }
+
+    private func avatarFan(for c: RemoteCircle, accent: GroupAccent) -> some View {
+        let actives = c.members.prefix(3)
+        return HStack(spacing: -10) {
+            ForEach(Array(actives.enumerated()), id: \.element.id) { _, m in
+                ZStack {
+                    Circle().fill(accent.color.opacity(0.3))
+                    Text(m.avatarSeed.isEmpty ? initials(m.name) : m.avatarSeed)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
+                .frame(width: 30, height: 30)
+                .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 2))
+            }
+            if c.memberCount > 3 {
+                ZStack {
+                    Circle().fill(accent.color)
+                    Text("+\(c.memberCount - 3)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.75))
+                }
+                .frame(width: 30, height: 30)
+                .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 2))
+            }
+        }
+    }
+
+    private func initials(_ name: String) -> String {
+        let parts = name.split(separator: " ").prefix(2)
+        return parts.map { String($0.first ?? "?") }.joined().uppercased()
+    }
+
+    // MARK: - Empty / error / skeleton
 
     private var emptyState: some View {
         VStack(spacing: 14) {
@@ -156,8 +310,7 @@ struct CirclesView: View {
                 .foregroundStyle(Theme.accent)
                 .ambientFloat(amplitude: 3, duration: 3.4)
             Text("Build your first circle")
-                .font(.aetherTitle2)
-                .foregroundStyle(Theme.textPrimary)
+                .font(.aetherTitle2).foregroundStyle(Theme.textPrimary)
             Text("Invite a friend or two. Discipline compounds when you compete with people you respect.")
                 .font(.aetherBody)
                 .foregroundStyle(Theme.textSecondary)
@@ -179,296 +332,36 @@ struct CirclesView: View {
         .glassCard(radius: 26)
     }
 
-    private func groupCard(_ g: FriendGroup) -> some View {
-        Button {
-            Haptics.tap()
-            path.append(g.id)
-        } label: {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("CIRCLE").font(.system(size: 9, weight: .bold)).tracking(2)
-                            .foregroundStyle(Theme.textTertiary)
-                        Text(g.name).font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(Theme.textPrimary)
-                    }
-                    Spacer()
-                    avatarFan(for: g)
-                }
-
-                let ranked = g.rankedMembers(currentUserXP: user.xp, currentUserName: user.name)
-                let myRank = (ranked.firstIndex(where: { $0.isMe }) ?? 0) + 1
-                HStack(spacing: 12) {
-                    statChip(label: "Members", value: "\(ranked.count)")
-                    statChip(label: "Your rank", value: "#\(myRank)")
-                    statChip(label: "Code", value: g.inviteCode)
-                }
-            }
-            .padding(18)
-            .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Theme.surface.opacity(0.55))
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(.ultraThinMaterial).opacity(0.35)
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [g.accent.color.opacity(0.22), .clear],
-                                startPoint: .topLeading, endPoint: .bottomTrailing
-                            )
-                        )
-                }
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(g.accent.color.opacity(0.35), lineWidth: 0.8)
-            )
-            .clipShape(.rect(cornerRadius: 22))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func statChip(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased())
-                .font(.system(size: 8, weight: .bold)).tracking(1.4)
-                .foregroundStyle(Theme.textTertiary)
-            Text(value)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+    private func errorCard(_ msg: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(Theme.warn)
+            Text(msg).font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.25)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line, lineWidth: 0.5))
-    }
-
-    private func avatarFan(for g: FriendGroup) -> some View {
-        let actives = g.members.filter { !$0.isPending }.prefix(3)
-        return HStack(spacing: -10) {
-            ForEach(Array(actives.enumerated()), id: \.element.id) { _, m in
-                ZStack {
-                    Circle().fill(g.accent.color.opacity(0.3))
-                    Text(m.initials).font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Theme.textPrimary)
-                }
-                .frame(width: 30, height: 30)
-                .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 2))
-            }
-            ZStack {
-                Circle().fill(g.accent.color)
-                Image(systemName: "person.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.black.opacity(0.7))
-            }
-            .frame(width: 30, height: 30)
-            .overlay(Circle().strokeBorder(Theme.bg, lineWidth: 2))
-        }
-    }
-
-    // MARK: - Global tab content (tier distribution + your standing)
-
-    @ViewBuilder
-    private var globalContent: some View {
-        metricSegmented.cinematicReveal(delay: 0.10)
-        if globalMetric == .physique {
-            physiqueStanding.cinematicReveal(delay: 0.16)
-            physiqueDistribution.cinematicReveal(delay: 0.22)
-            physiqueTierLadder.cinematicReveal(delay: 0.28)
-        } else {
-            pslStanding.cinematicReveal(delay: 0.16)
-            pslDistribution.cinematicReveal(delay: 0.22)
-            pslTierLadder.cinematicReveal(delay: 0.28)
-        }
-    }
-
-    private var metricSegmented: some View {
-        HStack(spacing: 6) {
-            ForEach(GlobalMetric.allCases) { m in
-                Button {
-                    Haptics.tap()
-                    withAnimation(Motion.snappy) { globalMetric = m }
-                } label: {
-                    Text(m.rawValue.uppercased())
-                        .font(.system(size: 11, weight: .bold)).tracking(1.6)
-                        .foregroundStyle(globalMetric == m ? Theme.bg : Theme.textPrimary)
-                        .frame(maxWidth: .infinity).frame(height: 36)
-                        .background {
-                            if globalMetric == m {
-                                RoundedRectangle(cornerRadius: 9).fill(.white.opacity(0.9))
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
+                .multilineTextAlignment(.center)
+            GhostButton(title: "Retry", icon: "arrow.clockwise") {
+                Task { await loadCircles() }
             }
         }
-        .padding(4)
-        .glassCard(radius: 12)
+        .padding(22)
+        .frame(maxWidth: .infinity)
+        .glassCard(radius: 22)
     }
 
-    private var physiqueScore: Double { scans.first?.physiqueScore ?? 0 }
-    private var pslScore: Double { faces.first?.overallScore ?? 0 }
-    private var physiqueTier: Tier { Tier.forScore(physiqueScore) }
-    private var pslTier: Tier { Tier.forScore(pslScore) }
-
-    private var physiqueStanding: some View {
-        scoreStandingCard(
-            label: "PHYSIQUE",
-            hasData: !scans.isEmpty,
-            score: physiqueScore,
-            tier: physiqueTier,
-            subtitle: scans.first?.archetypeRaw ?? "No scans yet",
-            icon: "figure.arms.open",
-            count: scans.count,
-            unit: "scans"
-        )
-    }
-
-    private var pslStanding: some View {
-        scoreStandingCard(
-            label: "PSL",
-            hasData: !faces.isEmpty,
-            score: pslScore,
-            tier: pslTier,
-            subtitle: faces.first.map { _ in "Facial Harmony" } ?? "No facial scans yet",
-            icon: "face.smiling",
-            count: faces.count,
-            unit: "analyses"
-        )
-    }
-
-    private func scoreStandingCard(label: String, hasData: Bool, score: Double, tier: Tier,
-                                   subtitle: String, icon: String, count: Int, unit: String) -> some View {
-        HStack(spacing: 14) {
-            TierEmblem(tier: tier, size: 52)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("YOUR \(label) STANDING").font(.system(size: 9, weight: .bold)).tracking(1.6)
-                    .foregroundStyle(Theme.textTertiary)
-                if hasData {
-                    Text("\(Int(score)) · \(tier.title)").font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Theme.textPrimary)
-                    Text(subtitle).font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(tier.color)
-                } else {
-                    Text("No data yet").font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Theme.textPrimary)
-                    Text("Run an analysis to unlock your standing.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(2)
-                }
-            }
-            Spacer()
-            if hasData {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(unit.uppercased()).font(.system(size: 8, weight: .bold)).tracking(1.4)
-                        .foregroundStyle(Theme.textTertiary)
-                    Text("\(count)").font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundStyle(Theme.textPrimary)
-                }
-            } else {
-                Image(systemName: icon).font(.system(size: 22, weight: .light))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-        }
-        .padding(16)
-        .glassCard(radius: 20)
-    }
-
-    private var physiqueDistribution: some View {
-        scoreDistributionCard(myTier: physiqueTier, title: "Physique Tier Distribution")
-    }
-
-    private var pslDistribution: some View {
-        scoreDistributionCard(myTier: pslTier, title: "PSL Tier Distribution")
-    }
-
-    private func scoreDistributionCard(myTier: Tier, title: String) -> some View {
+    private var skeletonCircle: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold)).tracking(2)
-                .foregroundStyle(Theme.textTertiary)
-            HStack(alignment: .bottom, spacing: 10) {
-                ForEach(Tier.allCases, id: \.self) { t in
-                    let pct = scoreDistributionPct(t)
-                    let isMe = t == myTier
-                    VStack(spacing: 8) {
-                        Spacer(minLength: 0)
-                        ZStack(alignment: .bottom) {
-                            RoundedRectangle(cornerRadius: 8).fill(t.color.opacity(0.25))
-                                .frame(width: 38, height: 110)
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(LinearGradient(colors: [t.color.opacity(0.5), t.color],
-                                                     startPoint: .top, endPoint: .bottom))
-                                .frame(width: 38, height: 110 * pct)
-                                .shadow(color: t.color.opacity(0.5), radius: 6)
-                        }
-                        Text(t.title.prefix(1).uppercased())
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(isMe ? Theme.textPrimary : Theme.textTertiary)
-                        if isMe {
-                            Text("YOU").font(.system(size: 8, weight: .bold)).tracking(1)
-                                .foregroundStyle(Theme.accentGlow)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
+            RoundedRectangle(cornerRadius: 6).fill(Theme.surface).frame(width: 140, height: 18)
+            HStack(spacing: 10) {
+                ForEach(0..<3, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 10).fill(Theme.surface).frame(height: 36)
                 }
             }
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard(radius: 20)
-    }
-
-    private func scoreDistributionPct(_ t: Tier) -> CGFloat {
-        switch t {
-        case .bronze: 1.0
-        case .silver: 0.68
-        case .gold:   0.40
-        case .elite:  0.18
-        case .greek:  0.05
-        }
-    }
-
-    private var physiqueTierLadder: some View {
-        scoreTierLadder(myTier: physiqueTier, header: "Physique Tier Ladder")
-    }
-
-    private var pslTierLadder: some View {
-        scoreTierLadder(myTier: pslTier, header: "PSL Tier Ladder")
-    }
-
-    private func scoreTierLadder(myTier: Tier, header: String) -> some View {
-        VStack(spacing: 10) {
-            SectionHeader(title: header)
-            ForEach(Tier.allCases, id: \.self) { t in
-                HStack(spacing: 14) {
-                    TierEmblem(tier: t, size: 34)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(t.title).font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Theme.textPrimary)
-                        Text(t.subtitle).font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(t.scoreRange.lowerBound)\u{2013}\(t.scoreRange.upperBound)")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Theme.textSecondary)
-                        Text("SCORE").font(.system(size: 8, weight: .bold)).tracking(1.4)
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
-                .padding(12)
-                .background {
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(t == myTier ? t.color.opacity(0.12) : Theme.surface.opacity(0.5))
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(t == myTier ? t.color.opacity(0.5) : Theme.line,
-                                      lineWidth: t == myTier ? 1 : 0.5)
-                }
-            }
-        }
+        .padding(18)
+        .frame(maxWidth: .infinity)
+        .glassCard(radius: 22)
+        .opacity(0.55)
     }
 
     // MARK: - Create / Join sheets
@@ -510,14 +403,26 @@ struct CirclesView: View {
                     }
                 }
 
-                PrimaryButton(title: "Create Circle", icon: "checkmark") {
+                PrimaryButton(title: "Create Circle", icon: "checkmark", loading: creating) {
                     let n = newName.trimmingCharacters(in: .whitespaces)
                     guard !n.isEmpty else { return }
-                    let g = FriendGroup(name: n, accent: newAccent)
-                    ctx.insert(g)
-                    try? ctx.save()
-                    Haptics.success()
-                    showCreate = false
+                    creating = true
+                    Task {
+                        do {
+                            let c = try await BackendService.shared.createCircle(
+                                name: n, accent: newAccent.rawValue, ownerName: user.name
+                            )
+                            Haptics.success()
+                            await loadCircles()
+                            creating = false
+                            showCreate = false
+                            // Jump straight to detail.
+                            path.append(c.id)
+                        } catch {
+                            creating = false
+                            joinError = "Could not create circle: \(error.localizedDescription)"
+                        }
+                    }
                 }
                 .padding(.top, 6)
 
@@ -549,7 +454,7 @@ struct CirclesView: View {
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .onChange(of: joinCode) { _, new in
-                            joinCode = String(new.uppercased().prefix(6))
+                            joinCode = String(new.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(6))
                         }
                     if let err = joinError {
                         Text(err).font(.system(size: 12, weight: .semibold))
@@ -557,7 +462,7 @@ struct CirclesView: View {
                     }
                 }
 
-                PrimaryButton(title: "Join", icon: "arrow.right") {
+                PrimaryButton(title: "Join", icon: "arrow.right", loading: joining) {
                     attemptJoin()
                 }
                 .padding(.top, 6)
@@ -579,19 +484,80 @@ struct CirclesView: View {
     private func attemptJoin() {
         let code = joinCode.trimmingCharacters(in: .whitespaces).uppercased()
         guard code.count == 6 else { joinError = "Codes are 6 characters."; return }
-        if groups.first(where: { $0.inviteCode == code }) != nil {
+        if circles.contains(where: { $0.code == code }) {
             joinError = "You're already in that circle."
             return
         }
-        // Create an empty circle that holds the invite code — real members appear when they accept.
-        let g = FriendGroup(name: "Circle · \(code)",
-                            accent: GroupAccent.allCases.randomElement() ?? .steel,
-                            inviteCode: code)
-        ctx.insert(g)
-        try? ctx.save()
-        Haptics.success()
-        joinCode = ""
+        joining = true
         joinError = nil
-        showJoin = false
+        Task {
+            do {
+                let c = try await BackendService.shared.joinCircle(code: code, userName: user.name)
+                Haptics.success()
+                await loadCircles()
+                joining = false
+                showJoin = false
+                path.append(c.id)
+            } catch {
+                joining = false
+                joinError = (error as? BackendError)?.errorDescription
+                    ?? error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Data
+
+    private func syncUserOnce() async {
+        await BackendService.shared.upsertUser(
+            name: user.name, xp: user.xp,
+            streak: user.streak, tier: user.tier.rawValue
+        )
+    }
+
+    private func loadCircles() async {
+        do {
+            let list = try await BackendService.shared.listCircles()
+            withAnimation(.smooth(duration: 0.3)) {
+                circles = list
+                loadError = nil
+            }
+        } catch {
+            loadError = "Couldn't load your circles."
+        }
+        loading = false
+    }
+
+    private func startPolling() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                await loadCircles()
+            }
+        }
+    }
+
+    private func consumePendingDeepLinkIfAny() {
+        guard let code = deepLink.pendingJoinCode else { return }
+        joinCode = code
+        joinError = nil
+        deepLink.pendingJoinCode = nil
+        showJoin = true
+    }
+
+    // MARK: - Shareable URLs
+
+    private func inviteURL(for code: String) -> URL {
+        let base = Config.EXPO_PUBLIC_RORK_FUNCTIONS_URL
+            .trimmingCharacters(in: .init(charactersIn: "/"))
+        return URL(string: "\(base)/join/\(code)") ?? URL(string: "https://ascend.app/join/\(code)")!
+    }
+
+    private func shareMessage(for c: RemoteCircle) -> String {
+        "\(user.name) invited you to \"\(c.name)\" on Ascend. Join with code \(c.code)."
     }
 }
+
+// `tabBarBottomInset` lives in the project; reuse it.

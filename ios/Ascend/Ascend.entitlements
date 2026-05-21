@@ -10,5 +10,9 @@
     <array>
         <string>Default</string>
     </array>
+    <key>com.apple.developer.associated-domains</key>
+    <array>
+        <string>applinks:5dm6zbnyue71m6ouijlfh-backend.rork.app</string>
+    </array>
 </dict>
 </plist>

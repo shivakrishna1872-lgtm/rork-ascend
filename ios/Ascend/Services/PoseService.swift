@@ -10,7 +10,20 @@ nonisolated struct PoseResult {
     let centeringX: Double             // 0..1 (0.5 = centered)
     let coverageY: Double              // 0..1 (fraction of vertical frame covered by body)
     let symmetry: Double               // 0..1
-    let shoulderWaistRatio: Double     // shoulders / hips
+    let shoulderWaistRatio: Double     // shoulders / hips (V-taper anchor)
+    /// Estimated torso "waist" width relative to shoulder width.
+    /// Smaller = leaner waist (lower body fat indicator).
+    let waistShoulderRatio: Double
+    /// Estimated thigh width relative to hip width (when legs visible).
+    /// Higher with more leg mass; very high with higher BF on lower body.
+    let thighHipRatio: Double
+    /// Torso aspect (shoulder-to-hip vertical distance / shoulder width).
+    /// Anchors muscle length proportions.
+    let torsoAspect: Double
+    /// Limb length asymmetry (left vs right arm + leg). 0..1, higher = more symmetric.
+    let limbSymmetry: Double
+    /// Shoulder slope tilt in degrees off horizontal. Used for posture.
+    let shoulderTiltDeg: Double
     let issues: [String]
 }
 
@@ -108,11 +121,15 @@ nonisolated struct PoseService {
         let coverageY = Double(max(0, maxY - minY))
 
         var symmetry: Double = 0.8
+        var shoulderTiltDeg: Double = 0
         if let ls = landmarks["left_shoulder_joint"], let rs = landmarks["right_shoulder_joint"],
            let lh = landmarks["left_hip_joint"], let rh = landmarks["right_hip_joint"] {
             let shoulderDelta = Double(abs(ls.y - rs.y))
             let hipDelta = Double(abs(lh.y - rh.y))
             symmetry = max(0, min(1, 1 - (shoulderDelta + hipDelta) * 4))
+            let sx = Double(rs.x - ls.x)
+            let sy = Double(rs.y - ls.y)
+            if abs(sx) > 0.001 { shoulderTiltDeg = atan2(sy, sx) * 180 / .pi }
         }
 
         var swRatio: Double = 1.4
@@ -121,6 +138,73 @@ nonisolated struct PoseService {
             let shoulderW = Double(abs(ls.x - rs.x))
             let hipW = Double(abs(lh.x - rh.x))
             if hipW > 0.01 { swRatio = shoulderW / hipW }
+        }
+
+        // Waist estimate: torso silhouette width at midpoint between shoulders and hips.
+        // Sampled from luminance edges in the torso ROI for a body-fat proxy.
+        var waistShoulderRatio: Double = 0.85
+        if let ls = landmarks["left_shoulder_joint"], let rs = landmarks["right_shoulder_joint"],
+           let lh = landmarks["left_hip_joint"], let rh = landmarks["right_hip_joint"] {
+            let shoulderW = Double(abs(ls.x - rs.x))
+            let shoulderY = Double((ls.y + rs.y) / 2)
+            let hipY = Double((lh.y + rh.y) / 2)
+            let centerX = Double((ls.x + rs.x + lh.x + rh.x) / 4)
+            // Midpoint of torso (roughly navel line)
+            let waistY = shoulderY + (hipY - shoulderY) * 0.58
+            if let w = estimateBodyWidth(cg: cg, centerX: centerX, y: waistY, maxHalfWidth: shoulderW * 0.9),
+               shoulderW > 0.001 {
+                waistShoulderRatio = max(0.55, min(1.4, w / shoulderW))
+            }
+        }
+
+        // Thigh / hip ratio: thigh width sampled below hip line.
+        var thighHipRatio: Double = 1.0
+        if let lh = landmarks["left_hip_joint"], let rh = landmarks["right_hip_joint"],
+           let lk = landmarks["left_knee_joint"], let rk = landmarks["right_knee_joint"] {
+            let hipW = Double(abs(lh.x - rh.x))
+            let upperThighY = Double((lh.y + rh.y) / 2 + (lk.y + rk.y) / 2) / 2 * 0.5 + Double((lh.y + rh.y) / 2) * 0.5
+            let centerX = Double((lh.x + rh.x) / 2)
+            if let w = estimateBodyWidth(cg: cg, centerX: centerX, y: upperThighY, maxHalfWidth: hipW * 1.1),
+               hipW > 0.001 {
+                thighHipRatio = max(0.5, min(1.8, w / hipW))
+            }
+        }
+
+        // Torso aspect: vertical span shoulder→hip divided by shoulder width.
+        var torsoAspect: Double = 1.4
+        if let ls = landmarks["left_shoulder_joint"], let rs = landmarks["right_shoulder_joint"],
+           let lh = landmarks["left_hip_joint"], let rh = landmarks["right_hip_joint"] {
+            let shoulderW = Double(abs(ls.x - rs.x))
+            let span = Double(abs(((lh.y + rh.y) / 2) - ((ls.y + rs.y) / 2)))
+            if shoulderW > 0.001 { torsoAspect = max(0.6, min(3.0, span / shoulderW)) }
+        }
+
+        // Limb symmetry: compare left vs right arm + leg lengths.
+        var limbSymmetry: Double = 0.9
+        func segLen(_ a: String, _ b: String) -> Double? {
+            guard let pa = landmarks[a], let pb = landmarks[b] else { return nil }
+            let dx = Double(pa.x - pb.x), dy = Double(pa.y - pb.y)
+            return sqrt(dx*dx + dy*dy)
+        }
+        var diffs: [Double] = []
+        if let la = segLen("left_shoulder_joint", "left_elbow_joint"),
+           let ra = segLen("right_shoulder_joint", "right_elbow_joint"),
+           max(la, ra) > 0.0001 {
+            diffs.append(abs(la - ra) / max(la, ra))
+        }
+        if let lf = segLen("left_elbow_joint", "left_wrist_joint"),
+           let rf = segLen("right_elbow_joint", "right_wrist_joint"),
+           max(lf, rf) > 0.0001 {
+            diffs.append(abs(lf - rf) / max(lf, rf))
+        }
+        if let ll = segLen("left_hip_joint", "left_knee_joint"),
+           let rl = segLen("right_hip_joint", "right_knee_joint"),
+           max(ll, rl) > 0.0001 {
+            diffs.append(abs(ll - rl) / max(ll, rl))
+        }
+        if !diffs.isEmpty {
+            let avgDiff = diffs.reduce(0, +) / Double(diffs.count)
+            limbSymmetry = max(0, min(1, 1 - avgDiff * 2.5))
         }
 
         let bright = brightness(cg: cg)
@@ -140,8 +224,77 @@ nonisolated struct PoseService {
             coverageY: coverageY,
             symmetry: symmetry,
             shoulderWaistRatio: swRatio,
+            waistShoulderRatio: waistShoulderRatio,
+            thighHipRatio: thighHipRatio,
+            torsoAspect: torsoAspect,
+            limbSymmetry: limbSymmetry,
+            shoulderTiltDeg: shoulderTiltDeg,
             issues: issues
         )
+    }
+
+    /// Estimate body silhouette width at a horizontal slice by walking outward
+    /// from `centerX` on the luminance gradient and finding the strongest edges.
+    /// Returns normalized width (0..1) or nil if it can't find clean edges.
+    private func estimateBodyWidth(cg: CGImage, centerX: Double, y: Double, maxHalfWidth: Double) -> Double? {
+        let w = cg.width, h = cg.height
+        guard w > 16, h > 16 else { return nil }
+        let yPix = Int((y * Double(h)).rounded())
+        guard yPix > 0, yPix < h - 1 else { return nil }
+        let cxPix = Int((centerX * Double(w)).rounded())
+
+        // Read one row of luminance.
+        let bytesPerRow = w * 4
+        var buffer = [UInt8](repeating: 0, count: bytesPerRow * 3)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: &buffer,
+            width: w, height: 3,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        // Render a 3-row slice centered on yPix.
+        let srcY = max(0, min(h - 3, yPix - 1))
+        ctx.draw(cg, in: CGRect(x: 0, y: -srcY, width: w, height: h))
+
+        func lum(_ x: Int) -> Double {
+            let i = bytesPerRow * 1 + x * 4 // middle row
+            let r = Double(buffer[i]) / 255
+            let g = Double(buffer[i + 1]) / 255
+            let b = Double(buffer[i + 2]) / 255
+            return 0.299*r + 0.587*g + 0.114*b
+        }
+
+        // Walk left/right and find largest local luminance gradient (edge of body).
+        let centerLum = lum(min(w - 1, max(0, cxPix)))
+        let maxPix = Int((maxHalfWidth * Double(w)).rounded())
+        var leftEdge: Int? = nil
+        var leftBestGrad: Double = 0
+        for d in stride(from: 4, through: max(8, maxPix), by: 2) {
+            let x = cxPix - d
+            if x < 2 { break }
+            let grad = abs(lum(x) - lum(x + 2))
+            let contrastFromCenter = abs(lum(x) - centerLum)
+            let score = grad + contrastFromCenter * 0.4
+            if score > leftBestGrad && score > 0.06 {
+                leftBestGrad = score; leftEdge = x
+            }
+        }
+        var rightEdge: Int? = nil
+        var rightBestGrad: Double = 0
+        for d in stride(from: 4, through: max(8, maxPix), by: 2) {
+            let x = cxPix + d
+            if x > w - 3 { break }
+            let grad = abs(lum(x) - lum(x - 2))
+            let contrastFromCenter = abs(lum(x) - centerLum)
+            let score = grad + contrastFromCenter * 0.4
+            if score > rightBestGrad && score > 0.06 {
+                rightBestGrad = score; rightEdge = x
+            }
+        }
+        guard let le = leftEdge, let re = rightEdge, re > le else { return nil }
+        return Double(re - le) / Double(w)
     }
 
     /// Face landmark analysis (Vision = on-device equivalent of MediaPipe Face Mesh)
@@ -262,6 +415,11 @@ nonisolated struct PoseService {
             coverageY: 0,
             symmetry: 0.5,
             shoulderWaistRatio: 1.4,
+            waistShoulderRatio: 0.85,
+            thighHipRatio: 1.0,
+            torsoAspect: 1.4,
+            limbSymmetry: 0.9,
+            shoulderTiltDeg: 0,
             issues: ["Body not detected"]
         )
     }

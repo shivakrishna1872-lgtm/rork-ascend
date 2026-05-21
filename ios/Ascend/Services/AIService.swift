@@ -209,13 +209,25 @@ nonisolated struct AIService {
         let anchorBlock: String = {
             guard let a = anchors else { return "(no on-device pose anchors available)" }
             return """
-            ON-DEVICE POSE ANCHORS (MediaPipe/Vision-equivalent, averaged across visible angles — anchor your scores here):
-            - measured_symmetry_index: \(Int(a.symmetry * 100))/100 (front+back weighted)
-            - shoulder_waist_ratio: \(String(format: "%.2f", a.shoulderWaistRatio)) (>1.5 = strong V-taper)
-            - body_coverage_y: \(Int(a.coverageY * 100))% of frame (higher = more body visible)
+            ON-DEVICE LANDMARK ANCHORS (Vision body-pose mesh + silhouette edge analysis, averaged across visible angles — these are angle/lighting-invariant, trust them):
+            - measured_symmetry_index: \(Int(a.symmetry * 100))/100 (shoulder + hip level alignment, front+back weighted)
+            - limb_symmetry: \(Int(a.limbSymmetry * 100))/100 (left vs right arm + leg length)
+            - shoulder_hip_ratio: \(String(format: "%.2f", a.shoulderWaistRatio)) (>1.5 = strong V-taper)
+            - waist_shoulder_ratio: \(String(format: "%.2f", a.waistShoulderRatio)) (silhouette waist ÷ shoulder width — LOWER = leaner; <0.78 lean, 0.78–0.88 moderate, >0.88 higher BF)
+            - thigh_hip_ratio: \(String(format: "%.2f", a.thighHipRatio)) (upper thigh ÷ hip width)
+            - torso_aspect: \(String(format: "%.2f", a.torsoAspect)) (torso height ÷ shoulder width)
+            - shoulder_tilt_deg: \(String(format: "%.1f", a.shoulderTiltDeg)) (posture; closer to 0 is square)
+            - estimated_body_fat_navy: \(String(format: "%.1f", a.navyBodyFatPercent))% (from waist/shoulder + BMI; trust this as the BF anchor)
+            - body_coverage_y: \(Int(a.coverageY * 100))% of frame
             - average_landmark_confidence: \(Int(a.confidence * 100))/100
             - angles_with_body_detected: \(a.detectedAngles) of 3
-            Use these to anchor symmetry, vTaper, and bodyFatConfidence. Do NOT contradict them by more than 8 points unless the visual evidence is overwhelming.
+
+            ANCHORING RULES (CRITICAL):
+            - symmetry MUST stay within ±5 of measured_symmetry_index (mixed with limb_symmetry).
+            - vTaper MUST be derived from shoulder_hip_ratio AND waist_shoulder_ratio together (a strong taper requires BOTH a wide shoulder/hip ratio AND a narrow waist/shoulder ratio).
+            - bodyFatPercent MUST stay within ±2.0% of estimated_body_fat_navy unless the photos clearly show extreme leanness (visible vascularity + obliques + serratus) or extreme adiposity, in which case adjust up to ±3.5%.
+            - conditioning correlates inversely with waist_shoulder_ratio: <0.76 → 80–95, 0.76–0.82 → 65–80, 0.82–0.90 → 50–65, >0.90 → 35–50.
+            - muscularity correlates with shoulder_hip_ratio + thigh_hip_ratio + (low) torso_aspect: stack them.
             """
         }()
         let anchorLine: String = {
@@ -241,18 +253,24 @@ nonisolated struct AIService {
 
         \(anchorBlock)
 
-        ACCURACY RULES (be GENEROUS about photo quality — never penalize for framing, lighting, distance, or angle):
+        ACCURACY RULES (anchor every score to landmark measurements, then use photos for refinement):
         - Treat ANY usable photo as normal input. Partial body, waist-up only, cropped legs, side-only, mirror selfies, casual lighting, phone camera angle — ALL acceptable. Do NOT lower scores because of photo quality.
-        - Score based on what is visible. If a region isn't shown, infer reasonably from visible regions and the user's BMI/weight/height — do NOT punish the user for it.
-        - Anchor body-fat estimate using visible markers: abdominal definition, vascularity, waist taper, deltoid striations, glute-ham separation. Use the user's BMI (\(String(format: "%.1f", profile.weightKg / pow(profile.heightCm/100, 2)))) as a sanity check.
-        - Symmetry = compare LEFT vs RIGHT across whatever IS visible (shoulders, arms, lats, legs). Slight rotation/turn is fine.
-        - V-taper = shoulder-to-waist ratio from whichever view shows it best.
-        - Muscularity = development relative to demographic norms for the user's sex/age/weight.
-        - Conditioning = leanness + definition + separation.
+        - Score based on what is visible. If a region isn't shown, infer reasonably from visible regions and the landmark ratios above — do NOT punish the user for it.
+        - Body fat: START from estimated_body_fat_navy. Adjust only based on visible markers: abdominal definition, obliques, vascularity, waist taper, deltoid striations, glute-ham separation. BMI sanity check: \(String(format: "%.1f", profile.weightKg / pow(profile.heightCm/100, 2))).
+        - Symmetry = primarily measured_symmetry_index (60%) + limb_symmetry (40%); refine ±3 from visible asymmetries.
+        - V-taper requires BOTH wide shoulder_hip_ratio AND narrow waist_shoulder_ratio — never score high V-taper if waist_shoulder_ratio > 0.88.
+        - Muscularity = development relative to demographic norms for the user's sex/age/weight, stacked with shoulder_hip_ratio and thigh_hip_ratio.
+        - Conditioning = leanness + definition + separation, anchored to waist_shoulder_ratio band.
         - If a photo is partial, dim, blurry, or oddly angled, STILL produce a confident estimate. Lower bodyFatConfidence slightly (5-15 points) but keep the main scores stable.
         - NEVER refuse to score, never return a placeholder, never tell the user to retake the photo.
 
-        STABILITY vs SENSITIVITY: Be deterministic — identical inputs MUST produce identical outputs, and do NOT over-react to lighting/angle/framing differences alone. BUT when photos show actual physique change (visible leanness shift, added muscle, better posture, tighter waist), reflect it: a noticeable real change should move the relevant metric by 3–8 points, and a major transformation can move it 10+. Never flat-line at the baseline when the user has clearly progressed.
+        DIFFERENTIAL SENSITIVITY (this is the most important rule for this user):
+        - Be deterministic on identical photos. But when the new photos differ from the prior baseline in measurable ways (waist_shoulder_ratio change, shoulder_hip_ratio change, visible leanness change, posture change), MOVE THE SCORES VISIBLY.
+        - A small but real change (e.g. waist_shoulder_ratio dropped from 0.86 to 0.82) MUST move conditioning and physique by 4–7 points.
+        - A clear transformation (waist_shoulder_ratio dropped 0.08+, or BF dropped 2%+) MUST move conditioning and physique by 8–14 points.
+        - Plateau-looking photos still get ±2–3 points of variation reflecting tiny improvements in posture, fullness, or symmetry.
+        - Never return scores within ±1 of prior baseline when the landmark ratios show measurable change. The user MUST feel their work.
+        - Mirror this in reverse for regressions — honest feedback both ways.
 
         Return ONLY strict JSON:
         {
@@ -287,13 +305,20 @@ nonisolated struct AIService {
         let measureLine: String = {
             guard let m = measurements else { return "(no on-device measurements available)" }
             return """
-            On-device MediaPipe-style landmark measurements averaged across \(sampleCount) photo(s) (anchor your scores to these — they are angle/lighting-invariant):
+            On-device Vision Face Mesh landmark measurements (averaged across \(sampleCount) photo(s); angle/lighting-invariant — these are your anchors):
             - symmetry_index: \(Int(m.symmetry * 100))/100
             - thirds_balance: \(Int(m.thirds * 100))/100
-            - canthal_tilt_deg: \(String(format: "%.1f", m.canthalTiltDeg))
-            - eye_spacing_ratio: \(String(format: "%.2f", m.eyeSpacingRatio))
-            - jaw_ratio: \(String(format: "%.2f", m.jawRatio))
+            - canthal_tilt_deg: \(String(format: "%.1f", m.canthalTiltDeg)) (positive = upturned)
+            - eye_spacing_ratio: \(String(format: "%.2f", m.eyeSpacingRatio)) (ideal ≈ 1.0)
+            - jaw_ratio: \(String(format: "%.2f", m.jawRatio)) (ideal 0.70–0.80)
             - sample_agreement: \(Int(consistency * 100))/100 (higher = more consistent across photos)
+
+            DIRECT LANDMARK → SCORE MAPPING (use this as your starting point, then refine ±5):
+            - symmetry_index × 100 → symmetry score (clamp 30–98).
+            - thirds_balance × 100 → thirds score (clamp 30–98).
+            - canthal_tilt_deg: −2°→45, 0°→62, +2°→72, +4°→80, +6°→87, +8°+→93.
+            - eye_spacing_ratio: score = 92 − |ratio − 1.0| × 70 (clamp 30–95).
+            - jaw_ratio: score = 92 − |ratio − 0.75| × 160 (clamp 30–95).
             """
         }()
         let anchorLine: String = {
@@ -330,9 +355,15 @@ nonisolated struct AIService {
         - glowUpPotential: estimate realistic upside from grooming, body-fat reduction, sleep, posture, skincare. Higher when current overall is mid (50-70), lower when already high.
         - NEVER refuse to score. NEVER return placeholder values. NEVER ask the user to retake the photo.
 
+        DIFFERENTIAL SENSITIVITY (critical):
+        - If a landmark measurement changed measurably from the user's baseline (symmetry_index moved 0.04+, jaw_ratio moved 0.03+, canthal_tilt_deg moved 1.5°+), the matching score MUST move 4–8 points. Don't compress real change.
+        - A clear glow-up (leaner face shape, sharper jaw_ratio drop toward 0.72–0.78, cleaner skin) MUST move overall by 6–12 points.
+        - Plateau-looking photos still vary ±2–3 from grooming/expression/posture.
+        - Mirror in reverse for regressions. Never flat-line.
+
         MULTI-PHOTO AVERAGING: You are looking at \(images.count) photo(s) of the SAME person. Compute scores for each, then RETURN THE AVERAGE. Do not pick the best or worst photo. The symmetry score must be primarily driven by the on-device symmetry_index above (which is already averaged across all photos) so it stays stable across angles/lighting.
 
-        STABILITY vs SENSITIVITY: Be deterministic — identical inputs MUST produce identical outputs, and do NOT over-react to lighting/expression/camera differences alone. BUT when the photo shows real change (leaner face, clearer skin, sharper jawline, better grooming, improved symmetry from posture/expression), reflect it: a meaningful real change should move the metric by 3–8 points, and a major glow-up can move it 10+. Never flat-line when the user has clearly improved.
+        Be deterministic on identical photos. Do NOT over-react to lighting/expression/camera differences alone — but DO move scores when landmark measurements show real change (see DIFFERENTIAL SENSITIVITY above).
 
         Return ONLY strict JSON:
         {
@@ -723,12 +754,23 @@ nonisolated struct ScoreHistory {
 }
 
 /// Aggregated on-device pose measurements passed to the AI to anchor scoring.
+/// Richer set of landmark-derived ratios so the model has firm anchors for
+/// muscularity, leanness, body-fat and symmetry instead of guessing from pixels.
 nonisolated struct PhysiqueAnchors {
-    let symmetry: Double            // 0..1
-    let shoulderWaistRatio: Double
-    let coverageY: Double           // 0..1
-    let confidence: Double          // 0..1
+    let symmetry: Double            // 0..1 (shoulder/hip level alignment)
+    let shoulderWaistRatio: Double  // shoulders / hips (V-taper)
+    let waistShoulderRatio: Double  // measured waist / shoulder width (leanness proxy)
+    let thighHipRatio: Double       // upper thigh / hip width
+    let torsoAspect: Double         // torso vertical span / shoulder width
+    let limbSymmetry: Double        // 0..1 limb-length L vs R
+    let shoulderTiltDeg: Double     // posture tilt off horizontal
+    let coverageY: Double           // 0..1 (fraction of frame body occupies)
+    let confidence: Double          // 0..1 (Vision landmark confidence)
     let detectedAngles: Int         // 0...3
+    /// Navy-method body-fat estimate from waist/neck/height (or BMI-derived
+    /// proxy when neck isn't visible). The AI is told to anchor BF here
+    /// rather than guess from raw pixels — dramatically improves accuracy.
+    let navyBodyFatPercent: Double
 }
 
 // MARK: - Deterministic Fallbacks (used only if every AI model fails)
@@ -740,29 +782,48 @@ nonisolated struct PhysiqueAnchors {
 
 nonisolated enum PhysiqueHeuristic {
     static func estimate(profile: ProfileSnapshot, anchors: PhysiqueAnchors?) -> PhysiqueAnalysis {
-        // Derive body fat from BMI + sex (Deurenberg formula, simplified).
+        // Body fat: prefer the navy-method anchor when present (waist+shoulder+BMI),
+        // fall back to BMI-only Deurenberg otherwise.
         let h = max(1.2, profile.heightCm / 100)
         let bmi = profile.weightKg / (h * h)
         let sexAdj: Double = profile.sex.lowercased().contains("female") ? 5.4 : 0
-        var bf = 1.20 * bmi + 0.23 * Double(profile.age) - 16.2 + sexAdj
-        bf = max(6, min(38, bf))
+        let bmiBF = max(6, min(40, 1.20 * bmi + 0.23 * Double(profile.age) - 16.2 + sexAdj))
+        var bf = anchors?.navyBodyFatPercent ?? bmiBF
+        bf = max(5, min(42, bf))
 
-        // Symmetry / vTaper from pose anchors when present, otherwise neutral.
-        let symmetry = max(40, min(85, (anchors?.symmetry ?? 0.62) * 100))
+        // Symmetry blends shoulder/hip + limb symmetry.
+        let symAnchor = (anchors?.symmetry ?? 0.62) * 0.6 + (anchors?.limbSymmetry ?? 0.9) * 0.4
+        let symmetry = max(35, min(92, symAnchor * 100))
         let swRatio = anchors?.shoulderWaistRatio ?? 1.35
-        let vTaper = max(35, min(85, (swRatio - 1.0) * 110))
+        let waistRatio = anchors?.waistShoulderRatio ?? 0.85
+        // V-taper needs both: wide shoulders/hips AND narrow waist/shoulders.
+        let vTaperShoulder = max(30, min(95, (swRatio - 1.0) * 120))
+        let vTaperWaist = max(30, min(95, (0.95 - waistRatio) * 280))
+        let vTaper = (vTaperShoulder + vTaperWaist) / 2
 
-        // Muscularity / conditioning from BMI band + bf band.
+        // Muscularity from BMI band lifted by V-taper signal.
         let muscularity: Double = {
-            switch bmi {
-            case ..<19:  return 45
-            case 19..<22: return 55
-            case 22..<26: return 65
-            case 26..<29: return 60
-            default:      return 52
+            let base: Double = {
+                switch bmi {
+                case ..<19:  return 45
+                case 19..<22: return 55
+                case 22..<26: return 67
+                case 26..<29: return 62
+                default:      return 52
+                }
+            }()
+            return max(30, min(92, base + (swRatio - 1.3) * 18))
+        }()
+        // Conditioning anchored to waist/shoulder ratio band (most predictive of leanness).
+        let conditioning: Double = {
+            switch waistRatio {
+            case ..<0.76: return 88
+            case 0.76..<0.82: return 75
+            case 0.82..<0.90: return 60
+            case 0.90..<0.98: return 48
+            default: return 38
             }
         }()
-        let conditioning = max(30, min(85, 95 - bf * 1.6))
         let physique = (symmetry + muscularity + conditioning + vTaper) / 4
 
         let archetype: Archetype = {

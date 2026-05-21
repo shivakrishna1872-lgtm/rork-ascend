@@ -419,14 +419,39 @@ struct PhysiqueScanFlow: View {
             let detectedPoses = poses.compactMap { $0 }
             let avgSym = detectedPoses.isEmpty ? 0.5 : detectedPoses.map(\.symmetry).reduce(0, +) / Double(detectedPoses.count)
             let avgSW = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.shoulderWaistRatio).reduce(0, +) / Double(detectedPoses.count)
+            // Waist/shoulder is most reliable from front + back views.
+            let waistSamples: [Double] = [poses[0], poses[2]].compactMap { $0?.waistShoulderRatio }
+            let avgWaist = waistSamples.isEmpty ? 0.85 : waistSamples.reduce(0, +) / Double(waistSamples.count)
+            let avgThigh = detectedPoses.isEmpty ? 1.0 : detectedPoses.map(\.thighHipRatio).reduce(0, +) / Double(detectedPoses.count)
+            let avgTorso = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.torsoAspect).reduce(0, +) / Double(detectedPoses.count)
+            let avgLimbSym = detectedPoses.isEmpty ? 0.9 : detectedPoses.map(\.limbSymmetry).reduce(0, +) / Double(detectedPoses.count)
+            let avgTilt = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.shoulderTiltDeg).reduce(0, +) / Double(detectedPoses.count)
             let avgCov = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.coverageY).reduce(0, +) / Double(detectedPoses.count)
             let avgConfPose = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.confidenceAverage).reduce(0, +) / Double(detectedPoses.count)
+
+            // On-device body-fat anchor.
+            // Combines a Navy-style proxy (waist/shoulder ratio scaled) with a
+            // BMI/age fallback so the AI starts from a measurement, not a guess.
+            let bmi = user.weightKg / pow(max(1.2, user.heightCm / 100), 2)
+            let sexAdj: Double = (user.sex == .male) ? 0 : 5.4
+            let bmiBF = max(6, min(40, 1.20 * bmi + 0.23 * Double(user.ageValue) - 16.2 + sexAdj))
+            // Map waist/shoulder ratio into BF adjustment: 0.75 ≈ lean (−4),
+            // 0.85 ≈ baseline (0), 0.95 ≈ +5, 1.05+ ≈ +9.
+            let waistAdj = (avgWaist - 0.85) * 50
+            let navyBF = max(5, min(42, bmiBF * 0.55 + (bmiBF + waistAdj) * 0.45))
+
             let anchors = PhysiqueAnchors(
                 symmetry: avgSym,
                 shoulderWaistRatio: avgSW,
+                waistShoulderRatio: avgWaist,
+                thighHipRatio: avgThigh,
+                torsoAspect: avgTorso,
+                limbSymmetry: avgLimbSym,
+                shoulderTiltDeg: avgTilt,
                 coverageY: avgCov,
                 confidence: avgConfPose,
-                detectedAngles: detectedPoses.count
+                detectedAngles: detectedPoses.count,
+                navyBodyFatPercent: navyBF
             )
             let rawAnalysis = try await AIService.shared.analyzePhysique(
                 front: f, side: s, back: b, profile: snap, history: history, anchors: anchors

@@ -87,6 +87,88 @@ nonisolated struct DailyInsight: Codable {
     let detail: String
 }
 
+nonisolated struct CoachFocusArea: Codable, Hashable {
+    let title: String
+    let detail: String
+    let priority: String // "high" | "medium" | "low"
+    let category: String // "physique" | "face" | "nutrition" | "strength" | "recovery" | "habits"
+}
+
+nonisolated struct CoachAction: Codable, Hashable {
+    let title: String
+    let impact: String // short rationale
+    let timeframe: String // e.g. "today", "this week"
+}
+
+nonisolated struct CoachInsights: Codable {
+    let headline: String          // 1 short summary line
+    let summary: String           // 2-3 sentence overview
+    let strengths: [String]       // bullets
+    let focusAreas: [CoachFocusArea]
+    let actions: [CoachAction]    // weekly action plan
+    let nextScoreEstimate: Int    // projected overall score after 4 weeks of plan adherence
+    let momentum: String          // "rising" | "stable" | "slipping"
+    let isOfflineEstimate: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case headline, summary, strengths, focusAreas, actions, nextScoreEstimate, momentum, isOfflineEstimate
+    }
+
+    init(headline: String, summary: String, strengths: [String], focusAreas: [CoachFocusArea],
+         actions: [CoachAction], nextScoreEstimate: Int, momentum: String, isOfflineEstimate: Bool? = nil) {
+        self.headline = headline; self.summary = summary; self.strengths = strengths
+        self.focusAreas = focusAreas; self.actions = actions; self.nextScoreEstimate = nextScoreEstimate
+        self.momentum = momentum; self.isOfflineEstimate = isOfflineEstimate
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.headline = (try? c.decode(String.self, forKey: .headline)) ?? ""
+        self.summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
+        self.strengths = (try? c.decode([String].self, forKey: .strengths)) ?? []
+        self.focusAreas = (try? c.decode([CoachFocusArea].self, forKey: .focusAreas)) ?? []
+        self.actions = (try? c.decode([CoachAction].self, forKey: .actions)) ?? []
+        self.nextScoreEstimate = max(0, min(100, (try? c.decode(Int.self, forKey: .nextScoreEstimate)) ?? 0))
+        self.momentum = (try? c.decode(String.self, forKey: .momentum)) ?? "stable"
+        self.isOfflineEstimate = (try? c.decode(Bool.self, forKey: .isOfflineEstimate)) ?? false
+    }
+}
+
+nonisolated struct CoachInputs {
+    let profile: ProfileSnapshot
+    let streak: Int
+    let xp: Int
+    let tier: String
+    // Latest physique
+    let latestPhysique: Double?
+    let latestSymmetry: Double?
+    let latestMuscularity: Double?
+    let latestConditioning: Double?
+    let latestVTaper: Double?
+    let latestBodyFat: Double?
+    let physiqueTrend: Double      // newest - oldest over recent window
+    let physiqueScanCount: Int
+    // Latest face
+    let latestPSL: Double?
+    let latestJawline: Double?
+    let latestSymmetryFace: Double?
+    let faceTrend: Double
+    let faceScanCount: Int
+    // Nutrition (7d rolling)
+    let avgCalories: Int
+    let avgProtein: Int
+    let calorieTarget: Int
+    let proteinTarget: Int
+    let mealsLogged7d: Int
+    // Strength
+    let benchKg: Double?
+    let squatKg: Double?
+    let deadliftKg: Double?
+    let liftTrendKg: Double         // delta on total since first log
+    // Hydration today
+    let hydrationGlasses: Int
+}
+
 nonisolated enum AIServiceError: LocalizedError {
     case missingConfig
     case http(Int)
@@ -343,6 +425,80 @@ nonisolated struct AIService {
             if case .consentDenied = e { throw e }
             if case .missingConfig = e { throw e }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
+        }
+    }
+
+    /// Comprehensive coach analysis across every signal we have: physique, face,
+    /// nutrition, strength, recovery, habits. Returns a structured plan the user
+    /// can act on. Falls back to a deterministic heuristic if every model fails.
+    func coachInsights(_ inputs: CoachInputs) async throws -> CoachInsights {
+        let p = inputs
+        let unit = p.profile.calorieUnit
+        let physiqueLine = p.latestPhysique.map {
+            "physique \(Int($0))/100 (sym \(Int(p.latestSymmetry ?? 0)), muscle \(Int(p.latestMuscularity ?? 0)), lean \(Int(p.latestConditioning ?? 0)), v-taper \(Int(p.latestVTaper ?? 0)), bf \(String(format: "%.1f", p.latestBodyFat ?? 0))%) — \(p.physiqueScanCount) scans, trend \(String(format: "%+.1f", p.physiqueTrend))"
+        } ?? "physique: no scans yet"
+        let faceLine = p.latestPSL.map {
+            "PSL \(Int($0))/100 (jaw \(Int(p.latestJawline ?? 0)), sym \(Int(p.latestSymmetryFace ?? 0))) — \(p.faceScanCount) scans, trend \(String(format: "%+.1f", p.faceTrend))"
+        } ?? "PSL: no scans yet"
+        let nutritionLine = p.mealsLogged7d == 0
+            ? "nutrition: no meals logged in 7 days"
+            : "nutrition: \(p.avgCalories) \(unit)/day vs target \(p.calorieTarget), protein \(p.avgProtein)g vs \(p.proteinTarget)g (n=\(p.mealsLogged7d) meals)"
+        let liftLine: String = {
+            let parts = [
+                p.benchKg.map { "bench \(Int($0))kg" },
+                p.squatKg.map { "squat \(Int($0))kg" },
+                p.deadliftKg.map { "deadlift \(Int($0))kg" }
+            ].compactMap { $0 }
+            if parts.isEmpty { return "strength: no lifts logged" }
+            return "strength: \(parts.joined(separator: ", ")), total trend \(String(format: "%+.0f", p.liftTrendKg))kg"
+        }()
+
+        let prompt = """
+        You are Ascend Life, an elite self-improvement coach. Synthesize EVERY signal below into one cohesive, encouraging analysis. Be specific to this user's data — never generic advice. Never insult, never moralize.
+
+        USER:
+        - \(p.profile.age) y/o \(p.profile.sex), \(p.profile.heightDisplay), \(p.profile.weightDisplay)
+        - goals: \(p.profile.goals.joined(separator: ", "))
+        - tier \(p.tier), xp \(p.xp), streak \(p.streak) days, hydration today \(p.hydrationGlasses)/8
+
+        SIGNALS:
+        - \(physiqueLine)
+        - \(faceLine)
+        - \(nutritionLine)
+        - \(liftLine)
+
+        \(p.profile.unitsBlock)
+
+        RULES:
+        - Use ONLY the data provided. If a signal is missing, say so honestly and recommend collecting it (e.g. "log a physique scan").
+        - 3 focus areas max, ranked by impact for THIS user. Categories must be one of: physique, face, nutrition, strength, recovery, habits.
+        - 3-5 specific actions (concrete, measurable). Each must reference real numbers when possible.
+        - momentum: "rising" if trends + adherence are positive, "slipping" if multiple are negative, else "stable".
+        - nextScoreEstimate: realistic 4-week projection of the user's strongest score (physique or PSL) IF they follow the plan. Move it only 2-8 points unless current is very low (< 50) where 6-12 is reasonable.
+        - Tone: direct, warm, like a coach who knows the data.
+
+        Return ONLY strict JSON:
+        {
+          "headline": short headline (max 8 words),
+          "summary": 2-3 sentence overview,
+          "strengths": [3 short bullets — what's working],
+          "focusAreas": [
+            {"title": short, "detail": one sentence why, "priority": "high|medium|low", "category": "physique|face|nutrition|strength|recovery|habits"}
+          ],
+          "actions": [
+            {"title": specific action, "impact": short reason, "timeframe": "today|this week|next 4 weeks"}
+          ],
+          "nextScoreEstimate": integer 0-100,
+          "momentum": "rising|stable|slipping"
+        }
+        Output JSON only. Never use emojis.
+        """
+        do {
+            return try await callJSONText(prompt: prompt, as: CoachInsights.self)
+        } catch let e as AIServiceError {
+            if case .consentDenied = e { throw e }
+            if case .missingConfig = e { throw e }
+            return CoachHeuristic.estimate(inputs: inputs)
         }
     }
 
@@ -624,6 +780,168 @@ nonisolated enum FaceHeuristic {
                 "Front-facing photo with even lighting boosts accuracy."
             ],
             hairstyles: []
+        )
+    }
+}
+
+/// Deterministic fallback for the full coach analysis. Pure logic over the
+/// numbers the caller already has — no invented metrics. Used when every AI
+/// model fails so the AI tab never shows a blank state.
+nonisolated enum CoachHeuristic {
+    static func estimate(inputs: CoachInputs) -> CoachInsights {
+        let p = inputs
+        var strengths: [String] = []
+        var focus: [CoachFocusArea] = []
+        var actions: [CoachAction] = []
+
+        // --- Strengths ---
+        if p.streak >= 3 { strengths.append("\(p.streak)-day streak — habit is forming.") }
+        if let ph = p.latestPhysique, ph >= 70 { strengths.append("Physique baseline at \(Int(ph)) is above average.") }
+        if let psl = p.latestPSL, psl >= 70 { strengths.append("Facial harmony at \(Int(psl)) is a real asset.") }
+        if p.physiqueTrend > 1.5 { strengths.append("Physique trending up by \(String(format: "%+.1f", p.physiqueTrend)) points.") }
+        if p.liftTrendKg > 5 { strengths.append("Total strength up \(Int(p.liftTrendKg))kg — keep stacking.") }
+        if p.avgProtein > 0 && p.avgProtein >= Int(Double(p.proteinTarget) * 0.9) {
+            strengths.append("Protein on point at \(p.avgProtein)g/day.")
+        }
+        if strengths.isEmpty {
+            strengths = ["You showed up — that's the hardest part.",
+                         "Tracking is the first edge.",
+                         "Small consistent inputs compound."]
+        }
+
+        // --- Focus areas ---
+        // Nutrition adherence
+        if p.mealsLogged7d < 5 {
+            focus.append(CoachFocusArea(
+                title: "Log meals consistently",
+                detail: "Only \(p.mealsLogged7d) meals tracked in 7 days — coaching needs signal.",
+                priority: "high", category: "nutrition"))
+        } else if p.avgProtein < Int(Double(p.proteinTarget) * 0.85) && p.proteinTarget > 0 {
+            focus.append(CoachFocusArea(
+                title: "Raise daily protein",
+                detail: "Averaging \(p.avgProtein)g vs target \(p.proteinTarget)g — gap blunts recovery.",
+                priority: "high", category: "nutrition"))
+        }
+        // Physique
+        if p.physiqueScanCount == 0 {
+            focus.append(CoachFocusArea(
+                title: "Run your first physique scan",
+                detail: "No baseline yet — one scan unlocks personalized scoring.",
+                priority: "high", category: "physique"))
+        } else if let bf = p.latestBodyFat, bf > 20 {
+            focus.append(CoachFocusArea(
+                title: "Trim body fat",
+                detail: "At \(String(format: "%.1f", bf))% bf, a small cut would sharpen every other score.",
+                priority: "medium", category: "physique"))
+        } else if let con = p.latestConditioning, con < 60 {
+            focus.append(CoachFocusArea(
+                title: "Tighten conditioning",
+                detail: "Conditioning at \(Int(con)) — small recomp would lift overall physique.",
+                priority: "medium", category: "physique"))
+        }
+        // Strength
+        if p.benchKg == nil && p.squatKg == nil && p.deadliftKg == nil {
+            focus.append(CoachFocusArea(
+                title: "Log your big-three lifts",
+                detail: "Without bench/squat/deadlift the coach can't track strength progress.",
+                priority: "medium", category: "strength"))
+        }
+        // Face
+        if p.faceScanCount == 0 {
+            focus.append(CoachFocusArea(
+                title: "Capture a PSL baseline",
+                detail: "One front-on selfie unlocks face scoring + grooming guidance.",
+                priority: "low", category: "face"))
+        }
+        // Recovery / habits
+        if p.hydrationGlasses < 4 {
+            focus.append(CoachFocusArea(
+                title: "Hydrate harder today",
+                detail: "Only \(p.hydrationGlasses)/8 glasses logged — easiest win available.",
+                priority: "low", category: "recovery"))
+        }
+        if p.streak < 2 {
+            focus.append(CoachFocusArea(
+                title: "Build the daily streak",
+                detail: "Open the app and log one thing per day for a week — momentum follows.",
+                priority: "low", category: "habits"))
+        }
+        focus = Array(focus.prefix(3))
+        if focus.isEmpty {
+            focus = [CoachFocusArea(
+                title: "Keep stacking days",
+                detail: "Your inputs look balanced — protect consistency.",
+                priority: "low", category: "habits")]
+        }
+
+        // --- Actions (concrete) ---
+        if p.mealsLogged7d < 5 {
+            actions.append(CoachAction(title: "Log every meal for the next 7 days",
+                                       impact: "Unlocks accurate calorie + macro coaching.",
+                                       timeframe: "this week"))
+        }
+        if p.proteinTarget > 0 && p.avgProtein < p.proteinTarget {
+            let gap = max(0, p.proteinTarget - p.avgProtein)
+            actions.append(CoachAction(title: "Add ~\(gap)g protein per day",
+                                       impact: "Protects muscle, accelerates recovery.",
+                                       timeframe: "this week"))
+        }
+        if p.physiqueScanCount == 0 {
+            actions.append(CoachAction(title: "Run a 3-angle physique scan",
+                                       impact: "Sets your personal baseline + calibration.",
+                                       timeframe: "today"))
+        }
+        if p.benchKg == nil || p.squatKg == nil || p.deadliftKg == nil {
+            actions.append(CoachAction(title: "Log your current bench/squat/deadlift 1RM",
+                                       impact: "Strength is the cleanest progress signal.",
+                                       timeframe: "today"))
+        }
+        if p.hydrationGlasses < 8 {
+            actions.append(CoachAction(title: "Hit 8 glasses of water today",
+                                       impact: "Cheapest win for skin, lifts, and focus.",
+                                       timeframe: "today"))
+        }
+        if actions.count < 3 {
+            actions.append(CoachAction(title: "Two strength sessions this week",
+                                       impact: "Holds muscle baseline through any cut.",
+                                       timeframe: "this week"))
+        }
+        actions = Array(actions.prefix(5))
+
+        // Momentum
+        let positive = (p.physiqueTrend > 0.5 ? 1 : 0) + (p.faceTrend > 0.5 ? 1 : 0)
+                     + (p.liftTrendKg > 0 ? 1 : 0) + (p.streak >= 3 ? 1 : 0)
+        let negative = (p.physiqueTrend < -0.5 ? 1 : 0) + (p.faceTrend < -0.5 ? 1 : 0)
+                     + (p.mealsLogged7d < 3 ? 1 : 0) + (p.streak == 0 ? 1 : 0)
+        let momentum: String = {
+            if positive >= negative + 2 { return "rising" }
+            if negative >= positive + 2 { return "slipping" }
+            return "stable"
+        }()
+
+        // Projection: current best score + reasonable 4-week upside.
+        let current = max(p.latestPhysique ?? 0, p.latestPSL ?? 0)
+        let upside: Double = current < 50 ? 8 : current < 70 ? 5 : 3
+        let projection = Int(min(100, current + upside).rounded())
+
+        let headline: String = {
+            switch momentum {
+            case "rising":   return "Momentum is on your side."
+            case "slipping": return "Time to tighten the screws."
+            default:         return "Solid base — sharpen the edges."
+            }
+        }()
+        let summary = "Offline read based on your stored data. Run a fresh scan or log a meal to refresh the live AI analysis."
+
+        return CoachInsights(
+            headline: headline,
+            summary: summary,
+            strengths: strengths,
+            focusAreas: focus,
+            actions: actions,
+            nextScoreEstimate: projection,
+            momentum: momentum,
+            isOfflineEstimate: true
         )
     }
 }

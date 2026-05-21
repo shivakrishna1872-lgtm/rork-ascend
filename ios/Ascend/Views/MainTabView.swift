@@ -15,6 +15,7 @@ struct MainTabView: View {
                 case .physique:    PhysiqueView(user: user)
                 case .cal:         CalAIView(user: user)
                 case .psl:         PSLView(user: user)
+                case .ai:          AIInsightsView(user: user)
                 case .circles:     CirclesView(user: user)
                 }
             }
@@ -46,13 +47,14 @@ struct MainTabView: View {
 }
 
 enum AppTab: String, CaseIterable {
-    case home, physique, cal, psl, circles
+    case home, physique, cal, psl, ai, circles
     var icon: String {
         switch self {
         case .home:        "square.grid.2x2"
         case .physique:    "figure.stand"
         case .cal:         "fork.knife"
         case .psl:         "face.smiling"
+        case .ai:          "sparkles"
         case .circles:     "person.2.fill"
         }
     }
@@ -62,6 +64,7 @@ enum AppTab: String, CaseIterable {
         case .physique: "Physique"
         case .cal: "Cal AI"
         case .psl: "PSL"
+        case .ai: "Coach"
         case .circles: "Circles"
         }
     }

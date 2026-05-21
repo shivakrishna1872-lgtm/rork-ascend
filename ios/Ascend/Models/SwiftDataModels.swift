@@ -22,6 +22,12 @@ final class UserProfile {
     var appleUserId: String?
     var email: String?
     var unitSystemRaw: String = UnitSystem.metric.rawValue
+    /// Coach-set temporary daily calorie target override. 0 = no override.
+    var calorieOverrideValue: Int = 0
+    var calorieOverrideUntil: Date? = nil
+    /// Coach-set temporary daily protein target override (grams). 0 = no override.
+    var proteinOverrideValue: Int = 0
+    var proteinOverrideUntil: Date? = nil
 
     init(
         name: String = "Athlete",
@@ -42,7 +48,11 @@ final class UserProfile {
         hydrationDate: Date? = nil,
         appleUserId: String? = nil,
         email: String? = nil,
-        unitSystemRaw: String = UnitSystem.metric.rawValue
+        unitSystemRaw: String = UnitSystem.metric.rawValue,
+        calorieOverrideValue: Int = 0,
+        calorieOverrideUntil: Date? = nil,
+        proteinOverrideValue: Int = 0,
+        proteinOverrideUntil: Date? = nil
     ) {
         self.name = name
         self.ageValue = ageValue
@@ -63,6 +73,10 @@ final class UserProfile {
         self.appleUserId = appleUserId
         self.email = email
         self.unitSystemRaw = unitSystemRaw
+        self.calorieOverrideValue = calorieOverrideValue
+        self.calorieOverrideUntil = calorieOverrideUntil
+        self.proteinOverrideValue = proteinOverrideValue
+        self.proteinOverrideUntil = proteinOverrideUntil
     }
 
     var sex: Sex { Sex(rawValue: sexRaw) ?? .male }
@@ -79,8 +93,18 @@ final class UserProfile {
         return min(1, max(0, Double(xp - t.xpFloor) / span))
     }
 
-    /// Mifflin-St Jeor BMR * activity, with goal adjustment
+    /// Mifflin-St Jeor BMR * activity, with goal adjustment, honoring any
+    /// active coach-set override that hasn't expired yet.
     var dailyCalorieTarget: Int {
+        if calorieOverrideValue > 0,
+           let until = calorieOverrideUntil, until > .now {
+            return calorieOverrideValue
+        }
+        return baseDailyCalorieTarget
+    }
+
+    /// Underlying TDEE-derived target, ignoring any override.
+    var baseDailyCalorieTarget: Int {
         let bmr: Double = {
             if sex == .male {
                 return 10 * weightKg + 6.25 * heightCm - 5 * Double(ageValue) + 5
@@ -94,7 +118,13 @@ final class UserProfile {
         return Int(tdee.rounded())
     }
 
-    var proteinTargetG: Int { Int((weightKg * 2.0).rounded()) }
+    var proteinTargetG: Int {
+        if proteinOverrideValue > 0,
+           let until = proteinOverrideUntil, until > .now {
+            return proteinOverrideValue
+        }
+        return Int((weightKg * 2.0).rounded())
+    }
     var carbTargetG: Int { Int(Double(dailyCalorieTarget) * 0.45 / 4) }
     var fatTargetG: Int { Int(Double(dailyCalorieTarget) * 0.25 / 9) }
 }

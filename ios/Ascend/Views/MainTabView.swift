@@ -15,7 +15,7 @@ struct MainTabView: View {
                 case .physique:    PhysiqueView(user: user)
                 case .cal:         CalAIView(user: user)
                 case .psl:         PSLView(user: user)
-                case .ai:          AIInsightsView(user: user)
+                case .ai:          CoachChatView(user: user)
                 case .circles:     CirclesView(user: user)
                 }
             }

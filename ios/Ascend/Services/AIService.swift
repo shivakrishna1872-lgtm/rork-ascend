@@ -101,6 +101,8 @@ nonisolated enum AIServiceError: LocalizedError {
             case 413: "Photos were too large to send. Try fewer or smaller photos."
             case 408, 504: "The analysis timed out. Please try again."
             case 429: "Too many requests right now. Please wait a moment and retry."
+            case 402: "The AI provider is temporarily unavailable. Please try again in a moment."
+            case 401, 403: "AI service is not authorized. Please contact support."
             case 500...599: "The AI service is briefly unavailable. Please try again."
             default: "AI request failed (\(c))."
             }
@@ -117,6 +119,7 @@ nonisolated struct AIService {
     private var baseURL: String { Config.EXPO_PUBLIC_TOOLKIT_URL }
     private var key: String { Config.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY }
     private let model = "google/gemini-2.5-flash"
+    private let fallbackModels = ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"]
 
     // MARK: - Public APIs
 
@@ -333,7 +336,22 @@ nonisolated struct AIService {
                 ["role": "user", "content": prompt]
             ]
         ]
-        return try await postChat(body: body)
+        // Try primary model, then fallbacks on payment/rate/server errors.
+        let modelChain = [model] + fallbackModels
+        var lastError: Error = AIServiceError.empty
+        for modelId in modelChain {
+            var b = body
+            b["model"] = modelId
+            do {
+                return try await postChat(body: b)
+            } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                lastError = AIServiceError.http(code)
+                continue
+            } catch {
+                throw error
+            }
+        }
+        throw lastError
     }
 
     private func callJSONVision<T: Decodable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
@@ -351,23 +369,29 @@ nonisolated struct AIService {
         }()
 
         var lastError: Error = AIServiceError.empty
-        for attempt in attempts {
-            do {
-                let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
-                let body: [String: Any] = [
-                    "model": model,
-                    "temperature": 0.2,
-                    "messages": [
-                        ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
-                        ["role": "user", "content": parts]
+        let modelChain = [model] + fallbackModels
+        for modelId in modelChain {
+            for attempt in attempts {
+                do {
+                    let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
+                    let body: [String: Any] = [
+                        "model": modelId,
+                        "temperature": 0.2,
+                        "messages": [
+                            ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
+                            ["role": "user", "content": parts]
+                        ]
                     ]
-                ]
-                return try await postChat(body: body)
-            } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
-                lastError = AIServiceError.http(code)
-                continue // retry smaller
-            } catch {
-                throw error
+                    return try await postChat(body: body)
+                } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
+                    lastError = AIServiceError.http(code)
+                    continue // retry smaller
+                } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                    lastError = AIServiceError.http(code)
+                    break // try next model
+                } catch {
+                    throw error
+                }
             }
         }
         throw lastError

@@ -23,13 +23,16 @@ struct OnboardingFlow: View {
 
     @State private var heightTouched = false
     @State private var weightTouched = false
+    @State private var idealWeightKg: Double? = nil
+    @State private var idealWeightTouched = false
+    @State private var weightPaceKgPerWeek: Double = 0
 
     var body: some View {
         ZStack {
             VStack {
                 if step > 0 {
                     HStack(spacing: 6) {
-                        ForEach(0..<6, id: \.self) { i in
+                        ForEach(0..<7, id: \.self) { i in
                             Capsule()
                                 .fill(i <= step ? Theme.accent : Theme.line)
                                 .frame(height: 3)
@@ -47,8 +50,9 @@ struct OnboardingFlow: View {
                 case 0: welcome
                 case 1: personal
                 case 2: bodyDims
-                case 3: goalsStep
-                case 4: activityStep
+                case 3: idealWeightStep
+                case 4: goalsStep
+                case 5: activityStep
                 default: permissionsStep
                 }
             }
@@ -268,6 +272,158 @@ struct OnboardingFlow: View {
         }
     }
 
+    // MARK: - Ideal weight + pace
+
+    private var idealWeightStep: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            stepHeader(title: "Target physique",
+                       caption: "Where do you want to land, and how fast?")
+
+            VStack(alignment: .leading, spacing: 8) {
+                fieldLabel("Ideal Weight")
+                HStack {
+                    Text(idealWeightTouched
+                         ? unitSystem.formatWeight(kg: idealWeightKg ?? (weightKg ?? 72))
+                         : "—")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(idealWeightTouched ? Theme.textPrimary : Theme.textTertiary)
+                        .contentTransition(.numericText())
+                        .monospacedDigit()
+                    Spacer()
+                    if idealWeightTouched, let target = idealWeightKg, let current = weightKg {
+                        Text(directionLabel(current: current, target: target))
+                            .font(.system(size: 11, weight: .semibold)).tracking(1.5)
+                            .foregroundStyle(Theme.accentGlow)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.accent.opacity(0.18)))
+                    }
+                }
+                .padding(.horizontal, 16).frame(height: 52)
+                .glassCard(radius: 14)
+                Slider(value: Binding(
+                    get: { idealWeightKg ?? (weightKg ?? 72) },
+                    set: { idealWeightKg = $0; idealWeightTouched = true; syncPaceSign() }
+                ), in: 40...160, step: 0.5)
+                .tint(Theme.accent)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                fieldLabel("Pace")
+                let direction = paceDirection
+                HStack(spacing: 10) {
+                    ForEach(paceOptions(for: direction), id: \.kg) { opt in
+                        let on = abs(weightPaceKgPerWeek - opt.kg) < 0.001
+                        Button {
+                            Haptics.tap()
+                            withAnimation(.spring) { weightPaceKgPerWeek = opt.kg }
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(opt.title)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(on ? Theme.bg : Theme.textPrimary)
+                                Text(opt.subtitle(unit: unitSystem))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(on ? Theme.bg.opacity(0.7) : Theme.textTertiary)
+                            }
+                            .frame(maxWidth: .infinity).frame(height: 56)
+                            .background {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(on ? .white.opacity(0.9) : Theme.surface.opacity(0.5))
+                            }
+                            .overlay(RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if let weeks = estimatedWeeks {
+                    HStack(spacing: 6) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.textSecondary)
+                        Text("Estimated \(weeks) week\(weeks == 1 ? "" : "s") to reach your target")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .padding(.top, 6)
+                }
+            }
+
+            Spacer(minLength: 0)
+            primaryNext(enabled: idealWeightTouched)
+        }
+    }
+
+    private enum PaceDirection { case lose, gain, maintain }
+
+    private var paceDirection: PaceDirection {
+        guard let target = idealWeightKg, let current = weightKg else { return .maintain }
+        if target < current - 0.5 { return .lose }
+        if target > current + 0.5 { return .gain }
+        return .maintain
+    }
+
+    private func directionLabel(current: Double, target: Double) -> String {
+        let diff = target - current
+        if abs(diff) < 0.5 { return "MAINTAIN" }
+        let absStr = unitSystem.formatWeight(kg: abs(diff))
+        return diff < 0 ? "↓ \(absStr)" : "↑ \(absStr)"
+    }
+
+    private struct PaceOption {
+        let title: String
+        let kg: Double // signed kg/week
+        func subtitle(unit: UnitSystem) -> String {
+            if kg == 0 { return "hold" }
+            let perWeek = unit.formatWeight(kg: abs(kg))
+            return "\(perWeek)/wk"
+        }
+    }
+
+    private func paceOptions(for dir: PaceDirection) -> [PaceOption] {
+        switch dir {
+        case .lose:
+            return [
+                .init(title: "Easy", kg: -0.25),
+                .init(title: "Steady", kg: -0.5),
+                .init(title: "Aggressive", kg: -0.75)
+            ]
+        case .gain:
+            return [
+                .init(title: "Lean", kg: 0.15),
+                .init(title: "Steady", kg: 0.30),
+                .init(title: "Bulk", kg: 0.50)
+            ]
+        case .maintain:
+            return [.init(title: "Maintain", kg: 0)]
+        }
+    }
+
+    private func syncPaceSign() {
+        // Snap pace to the new direction so an old "lose" selection doesn't
+        // linger after the user swings ideal weight above current.
+        switch paceDirection {
+        case .lose:
+            if weightPaceKgPerWeek >= 0 { weightPaceKgPerWeek = -0.5 }
+        case .gain:
+            if weightPaceKgPerWeek <= 0 { weightPaceKgPerWeek = 0.30 }
+        case .maintain:
+            weightPaceKgPerWeek = 0
+        }
+    }
+
+    private var estimatedWeeks: Int? {
+        guard let target = idealWeightKg, let current = weightKg,
+              weightPaceKgPerWeek != 0 else { return nil }
+        let diff = target - current
+        if (diff > 0 && weightPaceKgPerWeek <= 0) || (diff < 0 && weightPaceKgPerWeek >= 0) {
+            return nil
+        }
+        let weeks = abs(diff / weightPaceKgPerWeek)
+        return max(1, Int(weeks.rounded()))
+    }
+
     private var goalsStep: some View {
         VStack(alignment: .leading, spacing: 22) {
             stepHeader(title: "Your direction", caption: "Pick up to three — we adapt.")
@@ -379,7 +535,7 @@ struct OnboardingFlow: View {
     }
 
     private func primaryNext(enabled: Bool = true) -> some View {
-        PrimaryButton(title: step >= 4 ? "Continue" : "Next", icon: "arrow.right") {
+        PrimaryButton(title: step >= 5 ? "Continue" : "Next", icon: "arrow.right") {
             if enabled { advance() }
         }
         .opacity(enabled ? 1 : 0.5)
@@ -462,6 +618,9 @@ struct OnboardingFlow: View {
         let finalWeight = weightKg ?? 72
         let finalActivity = activity ?? .active
 
+        let finalIdealWeight = idealWeightKg ?? 0
+        let finalPace = weightPaceKgPerWeek
+
         if let existing {
             existing.name = finalName
             existing.ageValue = finalAge
@@ -471,6 +630,8 @@ struct OnboardingFlow: View {
             existing.goalsRaw = goals.map { $0.rawValue }
             existing.activityRaw = finalActivity.rawValue
             existing.unitSystemRaw = unitSystem.rawValue
+            existing.idealWeightKg = finalIdealWeight
+            existing.weightPaceKgPerWeek = finalPace
             existing.onboarded = true
             if let appleUserId { existing.appleUserId = appleUserId }
             if let email { existing.email = email }
@@ -486,7 +647,9 @@ struct OnboardingFlow: View {
                 onboarded: true,
                 appleUserId: appleUserId,
                 email: email,
-                unitSystemRaw: unitSystem.rawValue
+                unitSystemRaw: unitSystem.rawValue,
+                idealWeightKg: finalIdealWeight,
+                weightPaceKgPerWeek: finalPace
             )
             ctx.insert(u)
         }

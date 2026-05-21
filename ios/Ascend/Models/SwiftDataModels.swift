@@ -28,6 +28,11 @@ final class UserProfile {
     /// Coach-set temporary daily protein target override (grams). 0 = no override.
     var proteinOverrideValue: Int = 0
     var proteinOverrideUntil: Date? = nil
+    /// Target weight in kg. 0 means "no goal set" → maintenance.
+    var idealWeightKg: Double = 0
+    /// Desired rate of weight change in kg per week. Sign mirrors direction:
+    /// negative = cut, positive = gain, 0 = maintain.
+    var weightPaceKgPerWeek: Double = 0
 
     init(
         name: String = "Athlete",
@@ -52,7 +57,9 @@ final class UserProfile {
         calorieOverrideValue: Int = 0,
         calorieOverrideUntil: Date? = nil,
         proteinOverrideValue: Int = 0,
-        proteinOverrideUntil: Date? = nil
+        proteinOverrideUntil: Date? = nil,
+        idealWeightKg: Double = 0,
+        weightPaceKgPerWeek: Double = 0
     ) {
         self.name = name
         self.ageValue = ageValue
@@ -77,6 +84,8 @@ final class UserProfile {
         self.calorieOverrideUntil = calorieOverrideUntil
         self.proteinOverrideValue = proteinOverrideValue
         self.proteinOverrideUntil = proteinOverrideUntil
+        self.idealWeightKg = idealWeightKg
+        self.weightPaceKgPerWeek = weightPaceKgPerWeek
     }
 
     var sex: Sex { Sex(rawValue: sexRaw) ?? .male }
@@ -113,9 +122,29 @@ final class UserProfile {
             }
         }()
         var tdee = bmr * activity.multiplier
-        if goals.contains(.loseFat) { tdee -= 400 }
-        if goals.contains(.gainMuscle) { tdee += 250 }
+        // Pace-based adjustment dominates if the user set an ideal weight + pace.
+        // ~7700 kcal per kg of body mass → daily delta = pace * 7700 / 7.
+        if idealWeightKg > 0 && weightPaceKgPerWeek != 0 {
+            let dailyDelta = weightPaceKgPerWeek * 7700.0 / 7.0
+            // Safety cap so the AI / user can't starve themselves or binge.
+            let capped = max(-900.0, min(700.0, dailyDelta))
+            tdee += capped
+        } else {
+            if goals.contains(.loseFat) { tdee -= 400 }
+            if goals.contains(.gainMuscle) { tdee += 250 }
+        }
         return Int(tdee.rounded())
+    }
+
+    /// Estimated weeks to reach ideal weight at the current pace. nil if not set.
+    var weeksToGoal: Int? {
+        guard idealWeightKg > 0, weightPaceKgPerWeek != 0 else { return nil }
+        let diff = idealWeightKg - weightKg
+        if (diff > 0 && weightPaceKgPerWeek <= 0) || (diff < 0 && weightPaceKgPerWeek >= 0) {
+            return nil
+        }
+        let weeks = abs(diff / weightPaceKgPerWeek)
+        return max(1, Int(weeks.rounded()))
     }
 
     var proteinTargetG: Int {

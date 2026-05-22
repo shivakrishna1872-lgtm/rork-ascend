@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CryptoKit
 
 // MARK: - DTOs (nonisolated: decoded on background)
 
@@ -135,6 +136,24 @@ nonisolated struct CoachInsights: Codable {
 }
 
 nonisolated struct CoachInputs {
+    var cacheKey: String {
+        let parts: [String] = [
+            profile.cacheKey, String(streak), String(xp), tier,
+            String(format: "%.0f", latestPhysique ?? -1),
+            String(format: "%.1f", latestBodyFat ?? -1),
+            String(format: "%.1f", physiqueTrend), String(physiqueScanCount),
+            String(format: "%.0f", latestPSL ?? -1),
+            String(format: "%.1f", faceTrend), String(faceScanCount),
+            String(avgCalories), String(avgProtein), String(calorieTarget), String(proteinTarget), String(mealsLogged7d),
+            String(format: "%.0f", benchKg ?? -1),
+            String(format: "%.0f", squatKg ?? -1),
+            String(format: "%.0f", deadliftKg ?? -1),
+            String(format: "%.0f", liftTrendKg),
+            String(hydrationGlasses)
+        ]
+        return parts.joined(separator: ",")
+    }
+
     let profile: ProfileSnapshot
     let streak: Int
     let xp: Int
@@ -290,15 +309,20 @@ nonisolated struct AIService {
 
         Output JSON only.
         """
+        let cacheKey = AIResponseCache.hash(["physique", profile.cacheKey, anchors?.cacheKey ?? "", AIResponseCache.imageDigest([front, side, back])])
         do {
-            return try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
+            let r: PhysiqueAnalysis = try await callJSONVision(prompt: prompt, images: [front, side, back], as: PhysiqueAnalysis.self)
+            AIResponseCache.store(key: cacheKey, value: r)
+            return r
         } catch let e as AIServiceError {
-            // Hard-fail conditions surface to the user.
             if case .consentDenied = e { throw e }
-            if case .missingConfig = e { throw e }
-            // Transient AI failure (provider down, decode noise, network) → deterministic fallback
-            // computed from on-device pose anchors + user BMI. Never hallucinates: it is purely a
-            // measurement-driven estimate the user can re-run later.
+            // Universal fallback: cache → heuristic. Never surface API/402/AI-failed errors.
+            if let cached: PhysiqueAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: PhysiqueAnalysis = AIResponseCache.loadLatest("physique") { return lastGood }
+            return PhysiqueHeuristic.estimate(profile: profile, anchors: anchors)
+        } catch {
+            if let cached: PhysiqueAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: PhysiqueAnalysis = AIResponseCache.loadLatest("physique") { return lastGood }
             return PhysiqueHeuristic.estimate(profile: profile, anchors: anchors)
         }
     }
@@ -384,11 +408,19 @@ nonisolated struct AIService {
         }
         Output JSON only. Never insult.
         """
+        let cacheKey = AIResponseCache.hash(["face", measurements?.cacheKey ?? "", AIResponseCache.imageDigest(images)])
         do {
-            return try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
+            let r: FaceAnalysis = try await callJSONVision(prompt: prompt, images: images, as: FaceAnalysis.self)
+            AIResponseCache.store(key: cacheKey, value: r)
+            return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
-            if case .missingConfig = e { throw e }
+            if let cached: FaceAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: FaceAnalysis = AIResponseCache.loadLatest("face") { return lastGood }
+            return FaceHeuristic.estimate(measurements: measurements, consistency: consistency)
+        } catch {
+            if let cached: FaceAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: FaceAnalysis = AIResponseCache.loadLatest("face") { return lastGood }
             return FaceHeuristic.estimate(measurements: measurements, consistency: consistency)
         }
     }
@@ -451,14 +483,23 @@ nonisolated struct AIService {
         }
         Output JSON only.
         """
+        let imgs = image.map { [$0] } ?? []
+        let cacheKey = AIResponseCache.hash(["meal", description, unitSystem, AIResponseCache.imageDigest(imgs)])
         do {
+            let r: MealAnalysis
             if let image {
-                return try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
+                r = try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
+            } else {
+                r = try await callJSONText(prompt: prompt, as: MealAnalysis.self)
             }
-            return try await callJSONText(prompt: prompt, as: MealAnalysis.self)
+            AIResponseCache.store(key: cacheKey, value: r)
+            return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
-            if case .missingConfig = e { throw e }
+            if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
+        } catch {
+            if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         }
     }
@@ -528,11 +569,19 @@ nonisolated struct AIService {
         }
         Output JSON only. Never use emojis.
         """
+        let cacheKey = AIResponseCache.hash(["coach", inputs.cacheKey])
         do {
-            return try await callJSONText(prompt: prompt, as: CoachInsights.self)
+            let r: CoachInsights = try await callJSONText(prompt: prompt, as: CoachInsights.self)
+            AIResponseCache.store(key: cacheKey, value: r)
+            return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
-            if case .missingConfig = e { throw e }
+            if let cached: CoachInsights = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: CoachInsights = AIResponseCache.loadLatest("coach") { return lastGood }
+            return CoachHeuristic.estimate(inputs: inputs)
+        } catch {
+            if let cached: CoachInsights = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: CoachInsights = AIResponseCache.loadLatest("coach") { return lastGood }
             return CoachHeuristic.estimate(inputs: inputs)
         }
     }
@@ -564,7 +613,6 @@ nonisolated struct AIService {
         guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
 
         let modelChain = [model] + fallbackModels
-        var lastError: Error = AIServiceError.empty
         for modelId in modelChain {
             let body: [String: Any] = [
                 "model": modelId,
@@ -572,18 +620,13 @@ nonisolated struct AIService {
                 "messages": messages
             ]
             do {
-                return try await postChat(body: body)
-            } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 || code == 413 {
-                lastError = AIServiceError.http(code)
-                continue
-            } catch AIServiceError.decode {
-                lastError = AIServiceError.decode
-                continue
+                let reply: CoachReply = try await postChat(body: body)
+                return reply
             } catch {
-                throw error
+                continue
             }
         }
-        _ = lastError
+        // Universal fallback — deterministic on-device reply. Never surfaces an API error.
         return CoachHeuristic.chatReply(history: history, context: context)
     }
 
@@ -598,7 +641,24 @@ nonisolated struct AIService {
         Return strict JSON: {"headline": "one short headline (max 8 words)", "detail": "one short coaching sentence"}
         Output JSON only. Never use emojis.
         """
-        return try await callJSONText(prompt: prompt, as: DailyInsight.self)
+        let cacheKey = AIResponseCache.hash(["daily", profile.cacheKey, String(streak), String(recentScansCount), String(Int(caloriesAdherence * 100))])
+        do {
+            let r: DailyInsight = try await callJSONText(prompt: prompt, as: DailyInsight.self)
+            AIResponseCache.store(key: cacheKey, value: r)
+            return r
+        } catch {
+            if let cached: DailyInsight = AIResponseCache.load(key: cacheKey) { return cached }
+            if let lastGood: DailyInsight = AIResponseCache.loadLatest("daily") { return lastGood }
+            // Deterministic template fallback — never surface an API error.
+            let headline: String = {
+                if streak >= 7 { return "Streak strong — keep stacking." }
+                if caloriesAdherence > 0.85 { return "Nutrition dialed in." }
+                if recentScansCount > 0 { return "Data is your edge." }
+                return "Show up — that's the work."
+            }()
+            let detail = "One small input today protects tomorrow's progress."
+            return DailyInsight(headline: headline, detail: detail)
+        }
     }
 
     // MARK: - HTTP
@@ -613,19 +673,31 @@ nonisolated struct AIService {
                 ["role": "user", "content": prompt]
             ]
         ]
-        // Try primary model, then fallbacks on payment/rate/server errors.
+        // Try primary model, then fallbacks on payment/rate/server errors. Retry once per model on transient network errors.
         let modelChain = [model] + fallbackModels
         var lastError: Error = AIServiceError.empty
         for modelId in modelChain {
             var b = body
             b["model"] = modelId
-            do {
-                return try await postChat(body: b)
-            } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
-                lastError = AIServiceError.http(code)
-                continue
-            } catch {
-                throw error
+            for attempt in 0..<2 {
+                do {
+                    return try await postChat(body: b)
+                } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                    lastError = AIServiceError.http(code)
+                    break // try next model
+                } catch AIServiceError.http(let code) {
+                    lastError = AIServiceError.http(code)
+                    if attempt == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                    break
+                } catch AIServiceError.decode {
+                    lastError = AIServiceError.decode
+                    if attempt == 0 { continue }
+                    break
+                } catch {
+                    lastError = error
+                    if attempt == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                    break
+                }
             }
         }
         throw lastError
@@ -649,25 +721,38 @@ nonisolated struct AIService {
         let modelChain = [model] + fallbackModels
         for modelId in modelChain {
             for attempt in attempts {
-                do {
-                    let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
-                    let body: [String: Any] = [
-                        "model": modelId,
-                        "temperature": 0.2,
-                        "messages": [
-                            ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
-                            ["role": "user", "content": parts]
-                        ]
+                let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
+                let body: [String: Any] = [
+                    "model": modelId,
+                    "temperature": 0.2,
+                    "messages": [
+                        ["role": "system", "content": "You are Ascend. Reply with strict JSON only, no markdown fences. Be deterministic."],
+                        ["role": "user", "content": parts]
                     ]
-                    return try await postChat(body: body)
-                } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
-                    lastError = AIServiceError.http(code)
-                    continue // retry smaller
-                } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
-                    lastError = AIServiceError.http(code)
-                    break // try next model
-                } catch {
-                    throw error
+                ]
+                // Retry once per (model, size) on decode/transient network errors.
+                for retry in 0..<2 {
+                    do {
+                        return try await postChat(body: body)
+                    } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
+                        lastError = AIServiceError.http(code)
+                        break // shrink images (next attempt)
+                    } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                        lastError = AIServiceError.http(code)
+                        // try next model
+                        break
+                    } catch AIServiceError.decode {
+                        lastError = AIServiceError.decode
+                        if retry == 0 { continue } else { break }
+                    } catch {
+                        lastError = error
+                        if retry == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                        break
+                    }
+                }
+                // If we broke out due to provider-level failure (402/429/5xx), skip remaining sizes for this model.
+                if case let AIServiceError.http(code) = lastError, code == 402 || code == 429 || code == 500 || code == 503 {
+                    break
                 }
             }
         }
@@ -743,6 +828,74 @@ nonisolated struct AIService {
     }
 }
 
+// MARK: - Universal response cache
+//
+// Persists the last successful AI response per input hash AND the latest success
+// per category in UserDefaults so users always get a useful result — even when
+// the AI provider is down, rate limited, returns a 402, or the network drops.
+// Never surfaces an error to the UI; pure on-device, no credits used.
+nonisolated enum AIResponseCache {
+    private static let defaults = UserDefaults.standard
+    private static let prefix = "ai.cache."
+    private static let latestPrefix = "ai.cache.latest."
+    private static let maxAge: TimeInterval = 60 * 60 * 24 * 14 // 14 days
+
+    private struct Envelope<T: Codable>: Codable { let ts: Date; let value: T }
+
+    static func store<T: Codable>(key: String, value: T) {
+        let env = Envelope(ts: Date(), value: value)
+        guard let data = try? JSONEncoder().encode(env) else { return }
+        defaults.set(data, forKey: prefix + key)
+        // Also stash as "latest for category" so a brand-new input still has a previous result to fall back to.
+        if let category = key.split(separator: "|").first {
+            defaults.set(data, forKey: latestPrefix + String(category))
+        }
+    }
+
+    static func load<T: Codable>(key: String) -> T? {
+        guard let data = defaults.data(forKey: prefix + key),
+              let env = try? JSONDecoder().decode(Envelope<T>.self, from: data) else { return nil }
+        if Date().timeIntervalSince(env.ts) > maxAge { return nil }
+        return env.value
+    }
+
+    static func loadLatest<T: Codable>(_ category: String) -> T? {
+        guard let data = defaults.data(forKey: latestPrefix + category),
+              let env = try? JSONDecoder().decode(Envelope<T>.self, from: data) else { return nil }
+        if Date().timeIntervalSince(env.ts) > maxAge { return nil }
+        return env.value
+    }
+
+    /// Stable hash for arbitrary string components. Components are joined with `|`
+    /// so the first component (category) can be recovered for latest-per-category lookup.
+    static func hash(_ parts: [String]) -> String {
+        let joined = parts.joined(separator: "|")
+        let digest = SHA256.hash(data: Data(joined.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        // Keep the category prefix intact so loadLatest works without re-parsing.
+        let category = parts.first ?? "misc"
+        return "\(category)|\(hex)"
+    }
+
+    /// Cheap perceptual-ish digest of an image set — downsamples to 32px and SHA256s the bytes.
+    /// Identical photos hash identically; trivial edits (lighting/jpeg) still hash differently,
+    /// which is fine — we want cache hits only on true repeats.
+    static func imageDigest(_ images: [UIImage]) -> String {
+        guard !images.isEmpty else { return "none" }
+        var hasher = SHA256()
+        let target = CGSize(width: 32, height: 32)
+        for img in images {
+            let renderer = UIGraphicsImageRenderer(size: target)
+            let small = renderer.image { _ in img.draw(in: CGRect(origin: .zero, size: target)) }
+            if let data = small.jpegData(compressionQuality: 0.3) {
+                hasher.update(data: data)
+            }
+        }
+        let digest = hasher.finalize()
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 nonisolated struct ChatWire: Decodable {
     struct Choice: Decodable { struct Msg: Decodable { let content: String? }; let message: Msg }
     let choices: [Choice]
@@ -775,6 +928,12 @@ nonisolated struct PhysiqueAnchors {
     /// proxy when neck isn't visible). The AI is told to anchor BF here
     /// rather than guess from raw pixels — dramatically improves accuracy.
     let navyBodyFatPercent: Double
+
+    var cacheKey: String {
+        [symmetry, shoulderWaistRatio, waistShoulderRatio, thighHipRatio, torsoAspect, limbSymmetry, shoulderTiltDeg, navyBodyFatPercent]
+            .map { String(format: "%.2f", $0) }
+            .joined(separator: ",") + "|a\(detectedAngles)"
+    }
 }
 
 // MARK: - Deterministic Fallbacks (used only if every AI model fails)
@@ -1375,6 +1534,9 @@ nonisolated struct ProfileSnapshot {
                    : "\(Int(weightKg))kg"
     }
     var calorieUnit: String { isImperial ? "cal" : "kcal" }
+    var cacheKey: String {
+        "\(age)|\(sex)|\(Int(heightCm))|\(Int(weightKg))|\(goals.sorted().joined(separator: ","))|\(unitSystem)"
+    }
     var unitsBlock: String {
         isImperial
         ? "USER UNITS: IMPERIAL. In any user-facing strings (insight, recommendations, note), use pounds (lb), inches/feet (ft/in), and food calories as 'cal' (not kcal). Do NOT say cm, kg, or kcal in user-facing copy."

@@ -34,6 +34,12 @@ nonisolated struct FaceMeasurements {
     let eyeSpacingRatio: Double   // intercanthal / eye-width
     let jawRatio: Double          // jaw width / face height
 
+    var cacheKey: String {
+        [symmetry, thirds, canthalTiltDeg, eyeSpacingRatio, jawRatio]
+            .map { String(format: "%.2f", $0) }
+            .joined(separator: ",")
+    }
+
     /// Robust trimmed-mean average across multiple measurements.
     /// Drops the single highest + lowest sample when 4+ are present so a
     /// bad-angle or bad-lighting photo can't swing the symmetry score.

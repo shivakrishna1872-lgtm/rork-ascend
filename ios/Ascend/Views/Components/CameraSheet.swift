@@ -5,8 +5,9 @@ import UIKit
 /// On the cloud simulator the camera is not available — call `CameraSheet.isAvailable`
 /// before presenting and show the placeholder card instead.
 ///
-/// Front-camera selfies are mirrored on capture so the saved image matches the
-/// live preview the user just saw (this is the natural feel users expect).
+/// Front-camera selfies are saved un-mirrored (matching how the lens actually
+/// sees you, the same way the Photos app stores selfies) so analysis isn't
+/// thrown off by the preview's mirror flip.
 struct CameraSheet: UIViewControllerRepresentable {
     let onCapture: (UIImage) -> Void
     let onCancel: () -> Void
@@ -45,12 +46,7 @@ struct CameraSheet: UIViewControllerRepresentable {
         nonisolated func imagePickerController(_ picker: UIImagePickerController,
                                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
             let raw = info[.originalImage] as? UIImage
-            let isFront = picker.cameraDevice == .front
-            let processed: UIImage? = {
-                guard let raw else { return nil }
-                let oriented = raw.normalizedOrientation()
-                return isFront ? oriented.horizontallyFlipped() : oriented
-            }()
+            let processed: UIImage? = raw?.normalizedOrientation()
             DispatchQueue.main.async { [onCapture, onCancel] in
                 if let processed { onCapture(processed) } else { onCancel() }
             }

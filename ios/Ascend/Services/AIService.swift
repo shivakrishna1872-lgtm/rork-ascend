@@ -616,9 +616,25 @@ nonisolated struct AIService {
     /// tool calls that the app validates and applies on-device. Falls back to a
     /// deterministic on-device reply if every upstream model fails.
     func coachChat(history: [ChatTurn], context: CoachContext) async throws -> CoachReply {
+        // SCALE GUARDRAILS
+        // 1. Per-device throttle — prevents runaway costs at millions of users.
+        //    Soft rate limit: returns a graceful offline reply rather than an error.
+        if await !CoachThrottle.shared.allow() {
+            return CoachHeuristic.chatReply(history: history, context: context)
+        }
+        // 2. Short-window reply cache. If the exact same prompt comes in within
+        //    60s with the same context, serve the prior reply (covers double-taps,
+        //    network retries, and duplicate user sessions).
+        let lastUserText = history.reversed().first(where: { $0.role == "user" })?.text ?? ""
+        let chatCacheKey = AIResponseCache.hash(["chat", context.cacheKey, lastUserText])
+        if let cached: CoachReply = CoachReplyCache.load(key: chatCacheKey) { return cached }
+
+        // 3. Bound the context window — last 16 turns is plenty for coaching,
+        //    keeps token cost flat regardless of how long the session runs.
+        let trimmed = Array(history.suffix(16))
         let sys = CoachPrompts.system(context: context)
         var messages: [[String: Any]] = [["role": "system", "content": sys]]
-        for t in history {
+        for t in trimmed {
             if let imgs = t.images, !imgs.isEmpty, t.role == "user" {
                 var parts: [[String: Any]] = [["type": "text", "text": t.text]]
                 for img in imgs {
@@ -651,15 +667,21 @@ nonisolated struct AIService {
             if Date().timeIntervalSince(start) > totalBudget { break }
             let body: [String: Any] = [
                 "model": modelId,
-                "temperature": 0.4,
+                // Lower temp than before (0.4 → 0.25) — coaching needs consistency,
+                // not creativity. Cuts variance + hallucinations at the model layer.
+                "temperature": 0.25,
                 "messages": messages
             ]
             for attempt in 0..<3 {
                 if Date().timeIntervalSince(start) > totalBudget { break }
                 do {
                     // Lenient: parses JSON if present, otherwise wraps plain text as `reply`.
-                    let reply = try await postChatCoach(body: body)
+                    var reply = try await postChatCoach(body: body)
                     await CircuitBreaker.shared.recordSuccess(modelId)
+                    // Hard sanitize: clamp tool args to safe ranges, drop unknown
+                    // tools, scrub privacy leaks. The model cannot corrupt the app.
+                    reply = CoachGuard.sanitize(reply, context: context)
+                    CoachReplyCache.store(key: chatCacheKey, value: reply)
                     return reply
                 } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
                     await CircuitBreaker.shared.recordFailure(modelId, transient: true)

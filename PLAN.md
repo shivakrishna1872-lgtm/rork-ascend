@@ -49,5 +49,4 @@ The Coach tab houses two related surfaces:
 - [x] Workouts hub + plan detail (editable + timer) + generate form + scan flow.
 - [x] Register models + add entry button in Coach header.
 - [x] Progressive overload tracker — `SetLog` model + deterministic suggester surfaced in the plan editor.
-- [x] HealthKit recovery signal — HRV / sleep / resting-HR badge on the Workouts hub.
 - [x] Plan templates — preset PPL / Upper-Lower / Starting 5×5 / Full-Body 3 forkable into editable plans.

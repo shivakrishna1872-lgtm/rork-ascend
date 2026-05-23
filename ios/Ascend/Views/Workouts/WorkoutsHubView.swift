@@ -24,7 +24,6 @@ struct WorkoutsHubView: View {
                         if let primary = plans.first {
                             thisWeekCard(primary)
                         }
-                        RecoveryBadgeView()
                         creationCards
                         templatesButton
                         if plans.isEmpty {

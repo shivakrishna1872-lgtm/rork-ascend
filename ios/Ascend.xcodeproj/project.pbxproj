@@ -503,8 +503,6 @@
 				INFOPLIST_KEY_NSContactsUsageDescription = "Ascend Life uses your contacts to help you invite friends into your private circles.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Ascend Life uses your photos to analyze physique, meals, and facial proportions.";
 				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Ascend Life uses notifications to remind you of streaks, scans, and daily check-ins.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Ascend Life reads your heart-rate variability, resting heart rate, and sleep so it can tailor each day's workout intensity to your recovery.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Ascend Life logs completed workouts to Apple Health so they appear alongside your other activity.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -546,8 +544,6 @@
 				INFOPLIST_KEY_NSContactsUsageDescription = "Ascend Life uses your contacts to help you invite friends into your private circles.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Ascend Life uses your photos to analyze physique, meals, and facial proportions.";
 				INFOPLIST_KEY_NSUserNotificationsUsageDescription = "Ascend Life uses notifications to remind you of streaks, scans, and daily check-ins.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Ascend Life reads your heart-rate variability, resting heart rate, and sleep so it can tailor each day's workout intensity to your recovery.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Ascend Life logs completed workouts to Apple Health so they appear alongside your other activity.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

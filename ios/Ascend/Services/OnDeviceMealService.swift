@@ -51,6 +51,7 @@ nonisolated struct OnDeviceMealService {
             return nil
         }()
         if let key = cacheKey, let cached = ScanCache.loadFood(hash: key) {
+            let candidates = (cached.foodCandidates ?? []).map { FoodCandidate(name: $0.name, confidence: $0.confidence) }
             return MealAnalysis(
                 name: cached.dishName,
                 dishType: cached.dishType,
@@ -60,7 +61,10 @@ nonisolated struct OnDeviceMealService {
                 carbsG: cached.carbsG,
                 fatsG: cached.fatsG,
                 confidence: cached.confidence,
-                note: cached.note
+                note: cached.note,
+                foodCandidates: candidates,
+                portionMultiplier: cached.portionMultiplier ?? 1.0,
+                fallbackUsed: cached.fallbackUsed ?? false
             )
         }
 
@@ -81,8 +85,11 @@ nonisolated struct OnDeviceMealService {
             matches.append(contentsOf: brandMatches)
             ocrTextHits = hits
         }
+        var textQuantities: [String: Double] = [:] // canonical key → portion multiplier from text
         if !trimmed.isEmpty {
-            matches.append(contentsOf: parseText(trimmed))
+            let (textMatches, qty) = parseTextWithQuantities(trimmed)
+            matches.append(contentsOf: textMatches)
+            textQuantities = qty
         }
         matches = dedupe(matches)
 
@@ -112,9 +119,19 @@ nonisolated struct OnDeviceMealService {
         }
         guard !ingredients.isEmpty else { return nil }
 
-        // Portion estimate (uses image saliency when available).
-        let totalGrams = portionGrams(matches: matches, image: image)
-        let scale = totalGrams / max(1, ingredients.reduce(0) { $0 + $1.defaultGrams })
+        // ---- Portion estimation (separate layer from food recognition) ----
+        // Visual heuristics only — plate fill / saliency area produce a portion
+        // MULTIPLIER (e.g. 0.5x, 1x, 2x). Combined with any explicit quantities
+        // parsed from the description. AI never authors calories directly; it
+        // can only nudge this multiplier via the text it produces.
+        let visualMultiplier = portionMultiplier(image: image)
+        let textMultiplier = textQuantities.isEmpty
+            ? 1.0
+            : (textQuantities.values.reduce(0, +) / Double(textQuantities.count))
+        let finalMultiplier = max(0.4, min(2.5, visualMultiplier * textMultiplier))
+
+        let baselineGrams = ingredients.reduce(0) { $0 + $1.defaultGrams }
+        let scale = finalMultiplier
 
         var kcal = 0.0, p = 0.0, c = 0.0, f = 0.0
         var ing: [MealIngredient] = []
@@ -155,6 +172,7 @@ nonisolated struct OnDeviceMealService {
         let consensusAdjusted = Int(max(Double(confidence) * 0.85, Double(confidence) * 0.55 + consensusConf * 45).rounded())
         let finalConfidence = min(98, max(50, consensusAdjusted))
 
+        let candidates = buildCandidates(ranked: ranked)
         let analysis = MealAnalysis(
             name: dishName,
             dishType: dishType,
@@ -164,8 +182,12 @@ nonisolated struct OnDeviceMealService {
             carbsG: Int(c.rounded()),
             fatsG: Int(f.rounded()),
             confidence: finalConfidence,
-            note: noteFor(kcal: kcal, p: p, c: c, f: f, ocrHits: ocrTextHits, unitSystem: unitSystem)
+            note: noteFor(kcal: kcal, p: p, c: c, f: f, ocrHits: ocrTextHits, unitSystem: unitSystem),
+            foodCandidates: candidates,
+            portionMultiplier: finalMultiplier,
+            fallbackUsed: false
         )
+        _ = baselineGrams // silence unused-warning if optimizer drops it
 
         if let key = cacheKey {
             ScanCache.saveFood(hash: key, result: CachedFoodResult(
@@ -178,10 +200,114 @@ nonisolated struct OnDeviceMealService {
                 fatsG: analysis.fatsG,
                 confidence: analysis.confidence,
                 note: analysis.note,
-                engineVersion: engineVersion
+                engineVersion: engineVersion,
+                foodCandidates: analysis.foodCandidates.map { CachedFoodResult.Candidate(name: $0.name, confidence: $0.confidence) },
+                portionMultiplier: analysis.portionMultiplier,
+                fallbackUsed: analysis.fallbackUsed
             ))
         }
         return analysis
+    }
+
+    // MARK: - Food candidates (Top-K)
+
+    /// Top-K candidates derived from consensus ranking, mapped to display names
+    /// with per-item confidence the UI can present when the top pick is shaky.
+    private func buildCandidates(ranked: [(key: String, displayName: String, score: Double)]) -> [FoodCandidate] {
+        guard !ranked.isEmpty else { return [] }
+        let topScore = ranked.first?.score ?? 1
+        let normalizer = max(topScore, 0.6)
+        return ranked.prefix(5).map { entry in
+            let pct = min(1, max(0.05, entry.score / normalizer / 1.05))
+            return FoodCandidate(name: entry.displayName.capitalizedDishName, confidence: Int((pct * 100).rounded()))
+        }
+    }
+
+    // MARK: - Natural language quantity parsing
+
+    /// Pull explicit quantities out of text ("2 eggs", "1 cup rice", "200g chicken",
+    /// "a slice of pizza") and convert them into per-food portion multipliers
+    /// relative to the DB typical-grams baseline. Returns both the matches and
+    /// a key→multiplier dict.
+    private func parseTextWithQuantities(_ text: String) -> (matches: [FoodMatch], quantities: [String: Double]) {
+        let lower = text.lowercased()
+        var matches: [FoodMatch] = []
+        var quantities: [String: Double] = [:]
+
+        for (alias, key) in FoodDB.brandAliases where lower.contains(alias) {
+            matches.append(FoodMatch(rawKey: key, displayName: FoodDB.displayName(for: key), score: 0.9, source: .text))
+        }
+        for key in FoodDB.allKeys where lower.contains(key) {
+            matches.append(FoodMatch(rawKey: key, displayName: FoodDB.displayName(for: key), score: 0.75, source: .text))
+            // Look for a quantity expression in a small window before the key.
+            if let range = lower.range(of: key) {
+                let prefix = String(lower[..<range.lowerBound].suffix(40))
+                if let mult = extractMultiplier(prefix: prefix, key: key) {
+                    quantities[key] = mult
+                }
+            }
+        }
+        return (matches, quantities)
+    }
+
+    /// Translate "2", "200g", "1 cup", "a slice of" … into a portion multiplier.
+    private func extractMultiplier(prefix: String, key: String) -> Double? {
+        let typical = FoodDB.macros(for: key)?.typicalGrams ?? 150
+
+        // Word-number map for "a / two / three" …
+        let wordNumbers: [String: Double] = [
+            "a ": 1, "an ": 1, "one ": 1, "two ": 2, "three ": 3,
+            "four ": 4, "five ": 5, "six ": 6, "half ": 0.5
+        ]
+
+        // Explicit grams
+        if let g = firstNumber(in: prefix, suffix: "g") ?? firstNumber(in: prefix, suffix: " g") ?? firstNumber(in: prefix, suffix: "grams") {
+            return max(0.2, min(3.0, g / typical))
+        }
+        // Ounces
+        if let oz = firstNumber(in: prefix, suffix: "oz") ?? firstNumber(in: prefix, suffix: " oz") {
+            return max(0.2, min(3.0, (oz * 28.3495) / typical))
+        }
+        // Cups / tbsp — use rough volume→grams equivalents.
+        if let cups = firstNumber(in: prefix, suffix: "cup") ?? firstNumber(in: prefix, suffix: "cups") {
+            return max(0.3, min(3.0, (cups * 180) / typical))
+        }
+        if let tbsp = firstNumber(in: prefix, suffix: "tbsp") {
+            return max(0.2, min(3.0, (tbsp * 15) / typical))
+        }
+        // Plain count: "2 eggs", "3 tacos"
+        if let n = firstNumber(in: prefix, suffix: "") {
+            return max(0.3, min(3.0, n))
+        }
+        // Word-number prefix
+        for (word, mult) in wordNumbers where prefix.contains(word) {
+            return mult
+        }
+        return nil
+    }
+
+    /// Find a leading number in the trailing window (last 40 chars).
+    private func firstNumber(in text: String, suffix: String) -> Double? {
+        let scanner = Scanner(string: text)
+        scanner.charactersToBeSkipped = CharacterSet.whitespacesAndNewlines
+            .union(CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz,./()-"))
+        var last: Double? = nil
+        while !scanner.isAtEnd {
+            if let n = scanner.scanDouble() {
+                if suffix.isEmpty { last = n }
+                else {
+                    let pos = scanner.currentIndex
+                    let rest = String(text[pos...]).trimmingCharacters(in: .whitespaces)
+                    if rest.hasPrefix(suffix.trimmingCharacters(in: .whitespaces)) {
+                        return n
+                    }
+                    last = n
+                }
+            } else {
+                _ = scanner.scanCharacter()
+            }
+        }
+        return suffix.isEmpty ? last : nil
     }
 
     // MARK: - Preprocessing (lightweight, meal-tuned)
@@ -496,15 +622,14 @@ nonisolated struct OnDeviceMealService {
         }
     }
 
-    // MARK: - Portion estimation
+    // MARK: - Portion estimation (visual heuristics → multiplier)
 
-    private func portionGrams(matches: [FoodMatch], image: UIImage?) -> Double {
-        let baseline = matches.prefix(8).reduce(0.0) { acc, m in
-            acc + (FoodDB.macros(for: m.rawKey)?.typicalGrams ?? 150)
-        }
-        guard let image, let cg = image.cgImage else { return baseline }
-
-        var fill: Double = 1.0
+    /// Visual portion multiplier from image saliency alone. AI never gets to
+    /// author macros directly — calories are always DB * multiplier.
+    /// Output is quantized to 0.25 steps so two scans of the same image map
+    /// to the same bucket (0.5x / 0.75x / 1x / 1.25x / 1.5x / 2x).
+    private func portionMultiplier(image: UIImage?) -> Double {
+        guard let image, let cg = image.cgImage else { return 1.0 }
         let req = VNGenerateAttentionBasedSaliencyImageRequest()
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
         do {
@@ -513,10 +638,11 @@ nonisolated struct OnDeviceMealService {
                let salient = obs.salientObjects?.first {
                 let bb = salient.boundingBox
                 let area = max(0.05, bb.width * bb.height)
-                fill = (0.6 + area * 1.2).clamped(to: 0.7...1.5)
+                let raw = (0.55 + area * 1.3).clamped(to: 0.5...2.0)
+                return (raw * 4).rounded() / 4 // quantize
             }
         } catch { }
-        return baseline * fill
+        return 1.0
     }
 
     // MARK: - Helpers

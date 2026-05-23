@@ -555,6 +555,16 @@ struct MealLogSheet: View {
                 Text("\(r.confidence)% confidence")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
+                if r.portionMultiplier > 0 && abs(r.portionMultiplier - 1.0) > 0.05 {
+                    Text("· \(portionLabel(r.portionMultiplier)) portion")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            // Show top alternates when the top pick isn't confident enough.
+            // Tapping one swaps the dish without burning another scan.
+            if r.needsConfirmation, r.foodCandidates.count > 1 {
+                candidatesPicker(r)
             }
             if !r.ingredients.isEmpty {
                 Divider().overlay(Theme.line)
@@ -584,6 +594,51 @@ struct MealLogSheet: View {
         }
         .padding(16)
         .glassCard(radius: 16)
+    }
+
+    private func candidatesPicker(_ r: MealAnalysis) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Not quite right? Pick a closer match".uppercased())
+                .font(.system(size: 9, weight: .bold)).tracking(1.4)
+                .foregroundStyle(Theme.textTertiary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(r.foodCandidates.prefix(5), id: \.self) { cand in
+                        Button {
+                            Haptics.tap()
+                            swapToCandidate(cand)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(cand.name).font(.system(size: 12, weight: .semibold))
+                                Text("\(cand.confidence)%")
+                                    .font(.aetherMono)
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Capsule().fill(Theme.accent.opacity(0.12)))
+                            .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .contentMargins(.horizontal, 0)
+        }
+    }
+
+    private func portionLabel(_ m: Double) -> String {
+        if m < 0.65 { return "small" }
+        if m < 0.9 { return "under" }
+        if m > 1.6 { return "large" }
+        if m > 1.15 { return "big" }
+        return "regular"
+    }
+
+    private func swapToCandidate(_ cand: FoodCandidate) {
+        // Re-run analysis with the candidate name as the description so it goes
+        // through the same DB-grounded resolver — no AI-authored macros.
+        description = cand.name
+        analyze()
     }
 
     private func confidenceColor(_ c: Int) -> Color {

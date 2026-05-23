@@ -47,6 +47,13 @@ nonisolated struct MealIngredient: Codable, Hashable {
     }
 }
 
+/// Top-K candidate surfaced to the UI so low-confidence scans can ask the
+/// user to confirm the dish instead of silently committing to a guess.
+nonisolated struct FoodCandidate: Codable, Hashable {
+    let name: String
+    let confidence: Int // 0–100
+}
+
 nonisolated struct MealAnalysis: Codable {
     let name: String
     let dishType: String
@@ -57,16 +64,27 @@ nonisolated struct MealAnalysis: Codable {
     let fatsG: Int
     let confidence: Int
     let note: String
+    /// Top-K candidates with per-item confidence. Empty when no candidate set is available.
+    let foodCandidates: [FoodCandidate]
+    /// Visual portion multiplier (0.5x / 1x / 2x …) used to scale DB macros.
+    let portionMultiplier: Double
+    /// True only when the result came from the deterministic generic heuristic
+    /// (last-resort path). Used to drive a confirm prompt — never user-visible copy.
+    let fallbackUsed: Bool
 
     enum CodingKeys: String, CodingKey {
         case name, dishType, ingredients, calories, proteinG, carbsG, fatsG, confidence, note
+        case foodCandidates, portionMultiplier, fallbackUsed
     }
 
-    init(name: String, dishType: String = "", ingredients: [MealIngredient] = [], calories: Int, proteinG: Int, carbsG: Int, fatsG: Int, confidence: Int, note: String) {
+    init(name: String, dishType: String = "", ingredients: [MealIngredient] = [], calories: Int, proteinG: Int, carbsG: Int, fatsG: Int, confidence: Int, note: String, foodCandidates: [FoodCandidate] = [], portionMultiplier: Double = 1.0, fallbackUsed: Bool = false) {
         self.name = name; self.dishType = dishType; self.ingredients = ingredients
         self.calories = calories
         self.proteinG = proteinG; self.carbsG = carbsG; self.fatsG = fatsG
         self.confidence = confidence; self.note = note
+        self.foodCandidates = foodCandidates
+        self.portionMultiplier = portionMultiplier
+        self.fallbackUsed = fallbackUsed
     }
 
     init(from decoder: Decoder) throws {
@@ -80,6 +98,14 @@ nonisolated struct MealAnalysis: Codable {
         self.fatsG    = max(0, min(300, (try? c.decode(Int.self, forKey: .fatsG)) ?? 0))
         self.confidence = max(0, min(100, (try? c.decode(Int.self, forKey: .confidence)) ?? 70))
         self.note = (try? c.decode(String.self, forKey: .note)) ?? ""
+        self.foodCandidates = (try? c.decode([FoodCandidate].self, forKey: .foodCandidates)) ?? []
+        self.portionMultiplier = (try? c.decode(Double.self, forKey: .portionMultiplier)) ?? 1.0
+        self.fallbackUsed = (try? c.decode(Bool.self, forKey: .fallbackUsed)) ?? false
+    }
+
+    /// True when we should ask the user to confirm the dish before committing.
+    var needsConfirmation: Bool {
+        confidence < 65 || fallbackUsed
     }
 }
 
@@ -491,16 +517,18 @@ nonisolated struct AIService {
         let imgs = image.map { [$0] } ?? []
         let cacheKey = AIResponseCache.hash(["meal", description, unitSystem, AIResponseCache.imageDigest(imgs)])
 
-        // PRIORITY 1 — On-device (Vision classify + local food DB + USDA lookup).
-        // No credits, no network round-trip required, deterministic. Only accepted
-        // when confidence is high enough so we never serve a low-quality guess.
-        if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem),
-           local.confidence >= 65 {
+        // PRIORITY 1 — On-device (Vision classify + local food DB + USDA/OFF lookup).
+        // Deterministic, offline-first, DB-grounded macros. Always tried first;
+        // any non-nil result is accepted because macros come from the database,
+        // not a model.
+        if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
             AIResponseCache.store(key: cacheKey, value: local)
             return local
         }
 
-        // PRIORITY 2 — Cloud vision model (full prompt + retries + backup models).
+        // PRIORITY 2 — Cloud vision model. Only invoked when on-device couldn't
+        // produce ANY grounded candidate. The model still goes through the
+        // structured prompt; nutrition fields are validated downstream.
         do {
             let r: MealAnalysis
             if let image {
@@ -512,19 +540,9 @@ nonisolated struct AIService {
             return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
-            // PRIORITY 3 — On-device low-confidence result (better than a generic fallback).
-            if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
-                AIResponseCache.store(key: cacheKey, value: local)
-                return local
-            }
-            // PRIORITY 4 — Cache, then deterministic heuristic.
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         } catch {
-            if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
-                AIResponseCache.store(key: cacheKey, value: local)
-                return local
-            }
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         }
@@ -1519,8 +1537,11 @@ nonisolated enum MealHeuristic {
             proteinG: p,
             carbsG: c,
             fatsG: f,
-            confidence: hasImage ? 84 : 78,
-            note: "Macros calibrated from USDA reference data — tap to fine-tune portion."
+            confidence: hasImage ? 60 : 55,
+            note: "Macros calibrated from USDA reference data — tap to fine-tune portion.",
+            foodCandidates: [],
+            portionMultiplier: 1.0,
+            fallbackUsed: true
         )
     }
 }

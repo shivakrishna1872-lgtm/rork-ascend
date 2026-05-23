@@ -65,10 +65,35 @@ nonisolated struct CachedFoodResult: Codable, Sendable {
     let confidence: Int
     let note: String
     let engineVersion: String
+    /// Top-K (name, confidence) — empty for older cache entries.
+    let foodCandidates: [Candidate]?
+    let portionMultiplier: Double?
+    let fallbackUsed: Bool?
 
     nonisolated struct Item: Codable, Sendable {
         let name: String
         let portion: String
+    }
+
+    nonisolated struct Candidate: Codable, Sendable {
+        let name: String
+        let confidence: Int
+    }
+
+    init(dishName: String, dishType: String, ingredients: [Item],
+         calories: Int, proteinG: Int, carbsG: Int, fatsG: Int,
+         confidence: Int, note: String, engineVersion: String,
+         foodCandidates: [Candidate] = [], portionMultiplier: Double = 1.0,
+         fallbackUsed: Bool = false) {
+        self.dishName = dishName; self.dishType = dishType
+        self.ingredients = ingredients
+        self.calories = calories; self.proteinG = proteinG
+        self.carbsG = carbsG; self.fatsG = fatsG
+        self.confidence = confidence; self.note = note
+        self.engineVersion = engineVersion
+        self.foodCandidates = foodCandidates
+        self.portionMultiplier = portionMultiplier
+        self.fallbackUsed = fallbackUsed
     }
 }
 

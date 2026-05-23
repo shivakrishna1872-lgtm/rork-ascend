@@ -546,9 +546,13 @@ struct FaceScanSheet: View {
             var samples: [FaceMeasurements] = []
             var faceImages: [UIImage] = []
             for img in imgs {
-                if let m = await PoseService.shared.analyzeFace(img) {
+                // Preprocess each selfie (normalize lighting, crop to subject) so
+                // landmark extraction is angle/lighting-invariant.
+                let pre = await ImagePreprocessor.shared.process(img, mode: .face)
+                let cleaned = pre.receipt.isUsable ? pre.image : img
+                if let m = await PoseService.shared.analyzeFace(cleaned) {
                     samples.append(m)
-                    faceImages.append(img)
+                    faceImages.append(cleaned)
                 }
             }
 

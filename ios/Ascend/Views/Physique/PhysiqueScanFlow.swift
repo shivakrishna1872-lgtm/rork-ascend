@@ -96,8 +96,11 @@ struct PhysiqueScanFlow: View {
 
     @MainActor
     private func applyImage(_ img: UIImage) async {
-        captureBuffer = img
-        let pose = await PoseService.shared.analyze(img)
+        // Preprocess (lighting normalize + subject crop + blur check) before
+        // landmark extraction so quality is consistent across angles/lighting.
+        let pre = await ImagePreprocessor.shared.process(img, mode: .body)
+        captureBuffer = pre.image
+        let pose = await PoseService.shared.analyze(pre.image)
         withAnimation { poseResult = pose }
     }
 

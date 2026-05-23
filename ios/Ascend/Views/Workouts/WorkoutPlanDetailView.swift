@@ -104,7 +104,7 @@ struct WorkoutPlanDetailView: View {
             }
         }
         .sheet(item: $loggingExercise) { ex in
-            LogSetSheet(exercise: ex, planId: plan.id) { restSeconds in
+            LogSetSheet(exercise: ex, planId: plan.id, unitSystem: user.unitSystem) { restSeconds in
                 // Auto-start the rest timer after logging a set.
                 let secs = restSeconds > 0 ? restSeconds : (ex.restSeconds > 0 ? ex.restSeconds : 75)
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {

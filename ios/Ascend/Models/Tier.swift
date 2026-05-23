@@ -207,6 +207,36 @@ enum UnitSystem: String, CaseIterable, Codable, Identifiable {
         case .imperial: return String(format: "%.1f lb", kg * 2.2046226218)
         }
     }
+
+    /// Format a kg value compactly (no decimal when whole). Used in dense UI
+    /// like log-set rows where space is tight.
+    func formatWeightCompact(kg: Double) -> String {
+        if kg <= 0 { return "\u{2014}" }
+        let value: Double = (self == .metric) ? kg : kg * 2.2046226218
+        let unit = self.weightUnit
+        if abs(value - value.rounded()) < 0.05 {
+            return "\(Int(value.rounded()))\(unit)"
+        }
+        return String(format: "%.1f\(unit)", value)
+    }
+
+    /// Convert a user-entered value (typed in their preferred unit) into kg
+    /// for storage. Persisted values are always kg internally.
+    func toKg(userValue: Double) -> Double {
+        switch self {
+        case .metric: return userValue
+        case .imperial: return userValue / 2.2046226218
+        }
+    }
+
+    /// Convert a stored kg value into the unit the user prefers, for display
+    /// inside an input field (used to prefill).
+    func fromKg(_ kg: Double) -> Double {
+        switch self {
+        case .metric: return kg
+        case .imperial: return kg * 2.2046226218
+        }
+    }
 }
 
 enum AIPersonality: String, CaseIterable, Codable, Identifiable {

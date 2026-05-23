@@ -6,19 +6,21 @@ import SwiftData
 struct LogSetSheet: View {
     let exercise: WorkoutExercise
     let planId: UUID?
+    let unitSystem: UnitSystem
     let onLogged: ((Int) -> Void)?
     @Environment(\.modelContext) private var ctx
     @Environment(\.dismiss) private var dismiss
     @Query private var history: [SetLog]
 
-    @State private var weightKg: String = ""
+    @State private var weightInput: String = ""
     @State private var reps: String = ""
     @State private var suggestion: ProgressiveOverload.Suggestion?
     @State private var todaySets: [SetLog] = []
 
-    init(exercise: WorkoutExercise, planId: UUID?, onLogged: ((Int) -> Void)? = nil) {
+    init(exercise: WorkoutExercise, planId: UUID?, unitSystem: UnitSystem = .metric, onLogged: ((Int) -> Void)? = nil) {
         self.exercise = exercise
         self.planId = planId
+        self.unitSystem = unitSystem
         self.onLogged = onLogged
         let name = exercise.name
         let predicate = #Predicate<SetLog> { $0.exerciseName == name }
@@ -71,7 +73,7 @@ struct LogSetSheet: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if s.weightKg > 0 {
-                    Text(formatKg(s.weightKg))
+                    Text(formatWeight(s.weightKg))
                         .font(.system(size: 28, weight: .heavy, design: .rounded))
                         .foregroundStyle(Theme.textPrimary)
                 } else {
@@ -93,7 +95,7 @@ struct LogSetSheet: View {
             if s.weightKg > 0 {
                 Button {
                     Haptics.tap()
-                    weightKg = trimDouble(s.weightKg)
+                    weightInput = trimDouble(unitSystem.fromKg(s.weightKg))
                     reps = String(ProgressiveOverload.parseRepRange(s.reps).1)
                 } label: {
                     Text("Use suggestion")
@@ -114,8 +116,8 @@ struct LogSetSheet: View {
                 .font(.system(size: 10, weight: .heavy)).tracking(1.6)
                 .foregroundStyle(Theme.textTertiary)
             HStack(spacing: 10) {
-                field("WEIGHT (kg)") {
-                    TextField("0", text: $weightKg)
+                field("WEIGHT (\(unitSystem.weightUnit))") {
+                    TextField("0", text: $weightInput)
                         .keyboardType(.decimalPad)
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
                         .foregroundStyle(Theme.textPrimary)
@@ -163,7 +165,7 @@ struct LogSetSheet: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.textSecondary)
                     Spacer()
-                    Text("\(formatKg(log.weightKg)) × \(log.reps)")
+                    Text("\(formatWeight(log.weightKg)) × \(log.reps)")
                         .font(.system(size: 14, weight: .heavy, design: .rounded))
                         .foregroundStyle(Theme.textPrimary)
                     Button {
@@ -204,7 +206,7 @@ struct LogSetSheet: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.textSecondary)
                     Spacer()
-                    Text("\(formatKg(top)) · \(topReps.map(String.init).joined(separator: "/"))")
+                    Text("\(formatWeight(top)) · \(topReps.map(String.init).joined(separator: "/"))")
                         .font(.system(size: 13, weight: .heavy, design: .rounded))
                         .foregroundStyle(Theme.textPrimary)
                 }
@@ -219,7 +221,7 @@ struct LogSetSheet: View {
     // MARK: - Helpers
 
     private var canLog: Bool {
-        Double(weightKg.replacingOccurrences(of: ",", with: ".")) ?? 0 > 0
+        Double(weightInput.replacingOccurrences(of: ",", with: ".")) ?? 0 > 0
             && Int(reps) ?? 0 > 0
     }
 
@@ -234,7 +236,8 @@ struct LogSetSheet: View {
     }
 
     private func logSet() {
-        let w = Double(weightKg.replacingOccurrences(of: ",", with: ".")) ?? 0
+        let userValue = Double(weightInput.replacingOccurrences(of: ",", with: ".")) ?? 0
+        let w = unitSystem.toKg(userValue: userValue)
         let r = Int(reps) ?? 0
         guard w > 0, r > 0 else { return }
         let log = SetLog(
@@ -302,10 +305,9 @@ struct LogSetSheet: View {
         }
     }
 
-    private func formatKg(_ x: Double) -> String {
-        if x == 0 { return "—" }
-        if x == x.rounded() { return "\(Int(x))kg" }
-        return String(format: "%.1fkg", x)
+    private func formatWeight(_ kg: Double) -> String {
+        if kg == 0 { return "—" }
+        return unitSystem.formatWeightCompact(kg: kg)
     }
 
     private func trimDouble(_ x: Double) -> String {

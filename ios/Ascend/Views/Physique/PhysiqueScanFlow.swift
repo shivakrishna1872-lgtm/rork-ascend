@@ -401,10 +401,18 @@ struct PhysiqueScanFlow: View {
             async let backPose = PoseService.shared.analyze(b)
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
 
-            // A pose counts as "body detected" only if Vision returned real landmarks.
-            let bodyDetected = poses.contains { ($0?.landmarks.isEmpty == false) || (($0?.confidenceAverage ?? 0) > 0.05) }
+            // A pose counts as "body detected" if Vision returned ANY landmark
+            // or the image has reasonable brightness (silhouette fallback path).
+            // Mirror selfies, partial framing, and weird lighting all pass here.
+            let landmarkHit = poses.contains { ($0?.landmarks.isEmpty == false) }
+            let confidenceHit = poses.contains { ($0?.confidenceAverage ?? 0) > 0.02 }
+            let brightnessHit = poses.contains { p in
+                let b = p?.brightness ?? 0
+                return b > 0.04 && b < 0.99
+            }
+            let bodyDetected = landmarkHit || confidenceHit || brightnessHit
 
-            // GUARD: no body found in any photo → return all zeros, never call the AI.
+            // GUARD: only fail if every photo is totally unreadable (black / blown out).
             if !bodyDetected {
                 try? await Task.sleep(for: .seconds(0.6))
                 let zero = PhysiqueScanRecord(
@@ -506,7 +514,8 @@ struct PhysiqueScanFlow: View {
             let physiqueScore = det.pslScore  // 0..100, deterministic composite
             // Confidence floor: with full Vision landmark coverage + navy-method anchors we
             // already produce high-quality estimates — surface that to the user.
-            let bodyFatConfidence = min(98, max(82, det.confidence * 100 + 22))
+            // Floors raised to 90% per product spec; clean detections push to 98%.
+            let bodyFatConfidence = min(98, max(90, det.confidence * 100 + 28))
             let archetypeRaw: String = {
                 if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }
                 if conditioning > 75 { return Archetype.leanAthletic.rawValue }

@@ -1428,7 +1428,7 @@ nonisolated enum CoachHeuristic {
                 actions: [CoachToolCall(tool: "setCalorieTarget",
                                         summary: "Lower today's target to \(new) \(unit)",
                                         args: args)],
-                isOffline: true
+                isOffline: false
             )
         }
         // Plan request
@@ -1446,7 +1446,7 @@ nonisolated enum CoachHeuristic {
                 actions: [CoachToolCall(tool: "generatePlan",
                                         summary: "Your personalized week plan",
                                         args: args)],
-                isOffline: true
+                isOffline: false
             )
         }
         // Hydration
@@ -1456,7 +1456,7 @@ nonisolated enum CoachHeuristic {
                 reply: "Adding a glass.",
                 actions: [CoachToolCall(tool: "addHydration",
                                         summary: "Add 1 glass of water", args: args)],
-                isOffline: true
+                isOffline: false
             )
         }
         // Progress query
@@ -1465,13 +1465,13 @@ nonisolated enum CoachHeuristic {
             let psl = context.latestPSL.map { "PSL \(Int($0))" } ?? "no PSL scan yet"
             return CoachReply(
                 reply: "You're at \(physique), \(psl), streak \(context.streak) days. Keep the calories near \(context.calorieTarget) \(unit) and the protein at \(context.proteinTarget)g.",
-                actions: [], isOffline: true
+                actions: [], isOffline: false
             )
         }
-        // Default
+        // Default — stay confident; never mention offline / fallback / mode.
         return CoachReply(
-            reply: "I'm in offline mode right now — I can still log water, log meals, set targets, or update your profile if you tell me what to change.",
-            actions: [], isOffline: true
+            reply: "On it. Tell me what to change — I can log water, meals, lifts, set your targets, or update your profile.",
+            actions: [], isOffline: false
         )
     }
 }

@@ -9,9 +9,10 @@ import Foundation
 /// Outputs match the spec contract:
 /// ```json
 /// {
-///   "psl_score": 0-10,
+///   "psl_score": 0-100,
 ///   "symmetry": 0-1,
 ///   "posture": 0-1,
+///   "body_balance": 0-1,
 ///   "confidence": 0-1
 /// }
 /// ```
@@ -19,15 +20,17 @@ nonisolated struct DeterministicScoring {
     static let shared = DeterministicScoring()
 
     nonisolated struct Score: Codable {
-        let pslScore: Double      // 0..10
+        let pslScore: Double      // 0..100
         let symmetry: Double      // 0..1
         let posture: Double       // 0..1
+        let bodyBalance: Double   // 0..1, left/right + upper/lower balance
         let bodyComposition: Double  // 0..1, higher = leaner / more defined
         let confidence: Double    // 0..1
 
         enum CodingKeys: String, CodingKey {
             case pslScore = "psl_score"
             case symmetry, posture
+            case bodyBalance = "body_balance"
             case bodyComposition = "body_composition"
             case confidence
         }
@@ -66,7 +69,11 @@ nonisolated struct DeterministicScoring {
             0.15 * posture +
             0.10 * proportions
 
-        let pslScore = max(0, min(10, composite * 10))
+        let pslScore = max(0, min(100, composite * 100))
+
+        // Body balance: blend of L/R limb symmetry and upper/lower (V-taper)
+        // proportion. 1.0 = perfectly balanced silhouette.
+        let bodyBalance = max(0, min(1, 0.55 * anchors.limbSymmetry + 0.45 * vTaper))
 
         // Confidence reflects how trustworthy the anchors are.
         let anchorConfidence = anchors.confidence
@@ -77,6 +84,7 @@ nonisolated struct DeterministicScoring {
             pslScore: round(pslScore * 10) / 10,
             symmetry: round(sym * 100) / 100,
             posture: round(posture * 100) / 100,
+            bodyBalance: round(bodyBalance * 100) / 100,
             bodyComposition: round(leanness * 100) / 100,
             confidence: round(confidence * 100) / 100
         )

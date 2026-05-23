@@ -38,7 +38,7 @@ nonisolated struct DeterministicFaceScoring {
     ///
     /// `consistency` (0..1) reflects sample-to-sample agreement across photos
     /// and is folded into the confidence score.
-    func score(measurements: FaceMeasurements?, sampleCount: Int, consistency: Double) -> Score {
+    func score(measurements: FaceMeasurements?, sampleCount: Int, consistency: Double, faceQuality: Double = 1.0) -> Score {
         guard let m = measurements, sampleCount > 0 else {
             return Score(
                 pslScore: 0, symmetry: 0, jawline: 0, thirds: 0,
@@ -62,23 +62,37 @@ nonisolated struct DeterministicFaceScoring {
         // Jaw ratio: ideal 0.70..0.80; deviation penalized.
         let jawline = clamp(92 - abs(m.jawRatio - 0.75) * 160, lo: 30, hi: 95)
 
-        // Weighted blend matches the spec breakdown.
-        let psl =
-            0.25 * symmetry +
-            0.25 * jawline +
-            0.15 * thirds +
-            0.15 * canthal +
-            0.10 * eyeSpacing +
-            0.10 * ((symmetry + jawline) / 2) // grooming/posture proxy
+        // Face-quality gate: when landmarks are unreliable, redistribute
+        // weights from precision metrics (symmetry, canthal) to coarse
+        // structural ratios (jaw, thirds). Prevents overfitting low-quality
+        // selfies.
+        let w = FaceQuality.weights(for: faceQuality)
+        let baseSym = 0.25 * w.symmetry
+        let baseJaw = 0.25 * w.jawline
+        let baseThirds = 0.15 * w.thirds
+        let baseCanthal = 0.15 * w.canthal
+        let baseEye = 0.10 * w.eyeSpacing
+        let groomingW = 0.10
+        let totalW = baseSym + baseJaw + baseThirds + baseCanthal + baseEye + groomingW
+        let psl = (
+            baseSym * symmetry +
+            baseJaw * jawline +
+            baseThirds * thirds +
+            baseCanthal * canthal +
+            baseEye * eyeSpacing +
+            groomingW * ((symmetry + jawline) / 2)
+        ) / totalW
 
         // Glow-up potential: higher when current PSL is mid-range; lower at
         // either extreme. Fully deterministic.
         let mid = 1 - abs((psl - 65) / 35)
         let glowUp = clamp(20 + mid * 40, lo: 10, hi: 60)
 
-        // Confidence: sample count + agreement. 3 photos with high agreement = 1.0.
+        // Confidence: sample count + agreement + face quality. 3 photos with
+        // high agreement on a clean face = 1.0. Poor face quality scales it
+        // down honestly instead of pretending the read was clean.
         let sampleBoost = min(1.0, Double(sampleCount) / 3.0)
-        let conf = clamp(0.55 * sampleBoost + 0.45 * consistency, lo: 0, hi: 1)
+        let conf = clamp(0.40 * sampleBoost + 0.35 * consistency + 0.25 * faceQuality, lo: 0, hi: 1)
 
         return Score(
             pslScore:        round(psl * 10) / 10,

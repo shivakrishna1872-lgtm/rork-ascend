@@ -76,20 +76,40 @@ nonisolated enum VisionFocus: Sendable {
 
 nonisolated enum VisionTruthLayer {
 
+    // In-process memoization keyed by `imageHash|focus`. Guarantees PSL,
+    // Physique, and Cal AI consume the **same** VisionTruth instance for
+    // the same image — no duplicate Vision processing across pipelines.
+    private static let store = TruthStore()
+
+    private actor TruthStore {
+        var cache: [String: VisionTruth] = [:]
+        func get(_ key: String) -> VisionTruth? { cache[key] }
+        func set(_ key: String, _ value: VisionTruth) {
+            // Soft cap so long sessions don't grow unbounded.
+            if cache.count > 32 { cache.removeAll(keepingCapacity: true) }
+            cache[key] = value
+        }
+    }
+
     /// Single entrypoint. PSL / Physique / Cal AI all start here.
+    /// Memoized per `(imageHash, focus)` — second call returns the exact
+    /// same struct, no Vision re-run.
     static func analyze(_ image: UIImage, focus: VisionFocus) async -> VisionTruth {
         let normalized = ScanCache.normalize(image)
         let hash = normalized.hash
+        let memoKey = hash + "|" + String(describing: focus)
+        if let hit = await store.get(memoKey) { return hit }
         let cg = normalized.image.cgImage ?? image.cgImage
 
         let lighting = lightingQuality(cg: cg)
 
+        let truth: VisionTruth
         switch focus {
         case .face:
             let face = await PoseService.shared.analyzeFace(normalized.image)
             let faceQ = FaceQuality.score(measurements: face, lighting: lighting)
             let scene: VisionTruth.SceneType = faceQ > 0.4 ? .selfie : .unknown
-            return VisionTruth(
+            truth = VisionTruth(
                 imageHash: hash,
                 personDetected: face != nil,
                 personConfidence: face != nil ? 0.9 : 0.0,
@@ -109,7 +129,7 @@ nonisolated enum VisionTruthLayer {
             let occlusion = continuity // body continuity IS the inverse-occlusion
             let detected = (pose?.confidenceAverage ?? 0) > 0.02 || !(pose?.landmarks.isEmpty ?? true)
             let scene: VisionTruth.SceneType = continuity > 0.55 ? .gymBody : (detected ? .mirrorSelfie : .unknown)
-            return VisionTruth(
+            truth = VisionTruth(
                 imageHash: hash,
                 personDetected: detected,
                 personConfidence: pose?.confidenceAverage ?? 0,
@@ -125,7 +145,7 @@ nonisolated enum VisionTruthLayer {
 
         case .food:
             let anchor = await FoodIdentityAnchor.detect(image: normalized.image)
-            return VisionTruth(
+            truth = VisionTruth(
                 imageHash: hash,
                 personDetected: false,
                 personConfidence: 0,
@@ -139,7 +159,12 @@ nonisolated enum VisionTruthLayer {
                 foodAnchor: anchor
             )
         }
+        await store.set(memoKey, truth)
+        return truth
     }
+
+    /// Clear the in-process memo. Tests + privacy-clear paths.
+    static func purgeMemo() async { await store.set("__purge__", VisionTruth(imageHash: "", personDetected: false, personConfidence: 0, occlusionScore: 0, lightingQuality: 0, bodyContinuity: 0, faceQuality: 0, sceneType: .unknown, pose: nil, face: nil, foodAnchor: nil)) }
 
     // MARK: Lighting
 
@@ -181,6 +206,51 @@ nonisolated enum VisionTruthLayer {
 /// scale its final confidence honestly: low continuity → low confidence, no
 /// inflation.
 nonisolated enum BodyContinuity {
+    /// Explicit partial-body classification. Used so Physique can scope its
+    /// scoring honestly instead of inflating confidence when limbs are
+    /// simply absent from the frame.
+    nonisolated enum Partiality: String, Sendable {
+        case full          // shoulders + hips + at least one knee/ankle
+        case torsoOnly     // shoulders + hips, no legs (cropped upper body)
+        case upperOnly     // shoulders only, no hips visible
+        case obstructed    // partial limbs, phone/object blocking
+        case missing       // nothing usable
+    }
+
+    /// Classify what part of the body is actually present.
+    static func partiality(pose: PoseResult?) -> Partiality {
+        guard let p = pose else { return .missing }
+        let has: (String) -> Bool = { p.landmarks[$0] != nil }
+        let shoulders = has("left_shoulder_joint") || has("right_shoulder_joint")
+        let hips = has("left_hip_joint") || has("right_hip_joint")
+        let legs = has("left_knee_joint") || has("right_knee_joint") ||
+                   has("left_ankle_joint") || has("right_ankle_joint")
+        let limbs = has("left_elbow_joint") || has("right_elbow_joint") ||
+                    has("left_wrist_joint") || has("right_wrist_joint")
+        if !shoulders && !hips && !limbs { return .missing }
+        if shoulders && hips && legs { return .full }
+        if shoulders && hips { return .torsoOnly }
+        if shoulders { return .upperOnly }
+        return .obstructed
+    }
+
+    /// Per-region confidence multiplier. Missing data lowers only the
+    /// affected regions — never collapses the full-body score, never inflates.
+    static func regionWeight(_ partiality: Partiality, region: Region) -> Double {
+        switch (partiality, region) {
+        case (.full, _): return 1.0
+        case (.torsoOnly, .legs): return 0.0
+        case (.torsoOnly, _): return 0.95
+        case (.upperOnly, .legs): return 0.0
+        case (.upperOnly, .hips): return 0.3
+        case (.upperOnly, _): return 0.85
+        case (.obstructed, _): return 0.55
+        case (.missing, _): return 0.0
+        }
+    }
+
+    nonisolated enum Region: Sendable { case shoulders, torso, hips, legs }
+
     static func score(pose: PoseResult?, lighting: Double) -> Double {
         guard let p = pose else { return 0 }
 
@@ -422,6 +492,10 @@ nonisolated enum CrossPipelineConsistency {
         /// True when the deviation exceeded the threshold. UI should reduce
         /// the displayed confidence and flag uncertainty.
         let isUncertaintyEvent: Bool
+        /// 0..1 multiplier applied to broadcast confidence when pipelines
+        /// diverge. We never average or force-align the scores themselves;
+        /// only the *confidence* takes a controlled penalty.
+        let confidencePenalty: Double
         /// Human-readable explanation for debugging / telemetry.
         let note: String
     }
@@ -433,10 +507,20 @@ nonisolated enum CrossPipelineConsistency {
         // about 20 points — we treat 25+ as a divergence event.
         let agreement = max(0, 1 - delta / 50.0)
         let isEvent = delta > 25
+        // Controlled penalty: 0–15 pts deviation → 1.0, 25 → 0.92,
+        // 40 → 0.85, 60+ → 0.78. Never below 0.78 so a divergent reading
+        // doesn't collapse the user-facing confidence.
+        let penalty: Double = {
+            if delta < 15 { return 1.0 }
+            if delta < 25 { return 0.96 }
+            if delta < 40 { return 0.92 }
+            if delta < 60 { return 0.85 }
+            return 0.78
+        }()
         let note: String = {
-            if isEvent { return "PSL/Physique disagree by \(Int(delta)) pts — flagging uncertainty event." }
+            if isEvent { return "PSL/Physique disagree by \(Int(delta)) pts — confidence penalty \(Int((1-penalty)*100))%." }
             return "PSL/Physique within \(Int(delta)) pts — consistent."
         }()
-        return Report(agreement: agreement, isUncertaintyEvent: isEvent, note: note)
+        return Report(agreement: agreement, isUncertaintyEvent: isEvent, confidencePenalty: penalty, note: note)
     }
 }

@@ -5,6 +5,7 @@ import SwiftData
 /// creation paths: generate from profile, or scan a photo of a written plan.
 struct WorkoutsHubView: View {
     let user: UserProfile
+    var embedded: Bool = false
     @Environment(\.modelContext) private var ctx
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \WorkoutPlan.updatedAt, order: .reverse) private var plans: [WorkoutPlan]
@@ -38,14 +39,17 @@ struct WorkoutsHubView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .navigationTitle("Workouts")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle(embedded ? "" : "Workouts")
+            .navigationBarTitleDisplayMode(embedded ? .inline : .large)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(Theme.accentGlow)
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                            .foregroundStyle(Theme.accentGlow)
+                    }
                 }
             }
+            .toolbar(embedded ? .hidden : .automatic, for: .navigationBar)
             .sheet(isPresented: $showGenerate) {
                 GeneratePlanView(user: user) { plan in
                     selectedPlan = plan

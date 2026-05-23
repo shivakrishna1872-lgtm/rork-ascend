@@ -22,8 +22,14 @@ struct CoachChatView: View {
     @State private var pendingImages: [UIImage] = []
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var typingShown: Bool = false
-    @State private var showWorkouts: Bool = false
+    @State private var mode: CoachMode = .chat
     @FocusState private var inputFocused: Bool
+
+    enum CoachMode: String, CaseIterable, Hashable {
+        case chat, plan
+        var label: String { self == .chat ? "Coach" : "Workout Plan" }
+        var icon: String { self == .chat ? "sparkles" : "dumbbell.fill" }
+    }
 
     private var shouldShowStarters: Bool {
         guard let last = messages.last else { return true }
@@ -42,9 +48,70 @@ struct CoachChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            modeSwitcher
                 .padding(.horizontal, 18)
-                .padding(.top, 6)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+
+            if mode == .plan {
+                WorkoutsHubView(user: user, embedded: true)
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            } else {
+                chatBody
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+            }
+        }
+        .background(Color.clear)
+        .animation(.spring(response: 0.4, dampingFraction: 0.86), value: mode)
+        .onChange(of: pickerItems) { _, items in
+            Task { await loadPickedImages(items) }
+        }
+    }
+
+    private var modeSwitcher: some View {
+        HStack(spacing: 6) {
+            ForEach(CoachMode.allCases, id: \.self) { m in
+                let active = mode == m
+                Button {
+                    Haptics.soft()
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { mode = m }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: m.icon)
+                            .font(.system(size: 13, weight: .bold))
+                        Text(m.label)
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(active ? Theme.bg : Theme.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background {
+                        if active {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Theme.accentGlow)
+                                .shadow(color: Theme.accentGlow.opacity(0.4), radius: 8)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(5)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Theme.surface.opacity(0.55))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Theme.lineStrong, lineWidth: 0.6)
+        )
+    }
+
+    private var chatBody: some View {
+        VStack(spacing: 0) {
+            chatHeader
+                .padding(.horizontal, 18)
+                .padding(.top, 4)
                 .padding(.bottom, 8)
 
             ScrollViewReader { proxy in
@@ -98,19 +165,12 @@ struct CoachChatView: View {
                 .padding(.bottom, 96) // floating tab bar
                 .padding(.top, 6)
         }
-        .background(Color.clear)
         .animation(.spring(response: 0.4, dampingFraction: 0.86), value: messages.count)
-        .onChange(of: pickerItems) { _, items in
-            Task { await loadPickedImages(items) }
-        }
-        .sheet(isPresented: $showWorkouts) {
-            WorkoutsHubView(user: user)
-        }
     }
 
     // MARK: - Header
 
-    private var header: some View {
+    private var chatHeader: some View {
         HStack(alignment: .center, spacing: 10) {
             ZStack {
                 Circle().fill(Theme.accent.opacity(0.2))
@@ -129,17 +189,6 @@ struct CoachChatView: View {
                     .foregroundStyle(Theme.textPrimary)
             }
             Spacer()
-            Button {
-                Haptics.tap()
-                showWorkouts = true
-            } label: {
-                Image(systemName: "dumbbell.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .frame(width: 38, height: 38)
-                    .glassCard(radius: 12)
-            }
-            .buttonStyle(.plain)
             Button {
                 Haptics.tap()
                 withAnimation(.smooth(duration: 0.35)) {

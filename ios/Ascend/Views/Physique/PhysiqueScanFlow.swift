@@ -49,6 +49,7 @@ struct PhysiqueScanFlow: View {
     @State private var showCameraDenied = false
     @State private var showLibraryPicker = false
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var priorScans: [PhysiqueScanRecord]
+    @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFacesForHarmony: [FaceScanRecord]
 
     var body: some View {
         ZStack {
@@ -499,12 +500,41 @@ struct PhysiqueScanFlow: View {
 
             // Smooth final scores against the user's recent rolling average so similar
             // photos don't produce wildly different numbers between sessions.
-            let analysis = PhysiqueSmoothing.smooth(
+            var analysis = PhysiqueSmoothing.smooth(
                 raw: rawAnalysis,
                 blendedSymmetry: symmetry,
                 blendedVTaper: vTaper,
                 priors: priorScans
             )
+
+            // Cross-metric harmonization: gently pull physique toward the latest
+            // PSL score when the gap is moderate (real noise) but leave alone for
+            // small gaps (already coherent) and huge gaps (genuine divergence).
+            if let latestFace = priorFacesForHarmony.first,
+               Date.now.timeIntervalSince(latestFace.date) < 60 * 60 * 24 * 30 {
+                let physiqueConf = min(1.0, (bodyFatConfidence / 100) * 0.6 + Double(detected.count) * 0.12)
+                let faceConf = 0.6 // PSL has its own smoothing applied at save time
+                let h = ConsistencyEngine.harmonize(
+                    primary: analysis.physiqueScore,
+                    primaryConfidence: physiqueConf,
+                    secondary: latestFace.overallScore,
+                    secondaryConfidence: faceConf
+                )
+                if h.adjusted {
+                    analysis = PhysiqueAnalysis(
+                        physiqueScore: h.primary,
+                        symmetry: analysis.symmetry,
+                        muscularity: analysis.muscularity,
+                        conditioning: analysis.conditioning,
+                        vTaper: analysis.vTaper,
+                        bodyFatPercent: analysis.bodyFatPercent,
+                        bodyFatConfidence: analysis.bodyFatConfidence,
+                        archetype: analysis.archetype,
+                        insight: analysis.insight,
+                        recommendations: analysis.recommendations
+                    )
+                }
+            }
 
             let record = PhysiqueScanRecord(
                 physiqueScore: analysis.physiqueScore,

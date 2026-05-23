@@ -215,6 +215,7 @@ struct FaceScanSheet: View {
     @State private var showCameraDenied = false
     @State private var showLibraryPicker = false
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var priorFaces: [FaceScanRecord]
+    @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var priorPhysiquesForHarmony: [PhysiqueScanRecord]
 
     private let minPhotos = 3
     private let maxPhotos = 5
@@ -601,7 +602,36 @@ struct FaceScanSheet: View {
                 history: history
             )
             // 4) Blend long-term rolling history for cross-session stability.
-            let r = FaceSmoothing.smooth(raw: rawAnalysis, priors: priorFaces)
+            var r = FaceSmoothing.smooth(raw: rawAnalysis, priors: priorFaces)
+
+            // Cross-metric harmonization: gently pull PSL toward the latest physique
+            // score when the gap is moderate (real noise) but leave alone for small
+            // gaps (already consistent) and huge gaps (genuine divergence).
+            if let latestPhys = priorPhysiquesForHarmony.first,
+               Date.now.timeIntervalSince(latestPhys.date) < 60 * 60 * 24 * 30 {
+                let faceConf = min(1.0, consistency * 0.7 + Double(samples.count) * 0.08)
+                let physConf = min(1.0, (latestPhys.bodyFatConfidence / 100) * 0.5 + 0.4)
+                let h = ConsistencyEngine.harmonize(
+                    primary: r.overall,
+                    primaryConfidence: faceConf,
+                    secondary: latestPhys.physiqueScore,
+                    secondaryConfidence: physConf
+                )
+                if h.adjusted {
+                    r = FaceAnalysis(
+                        overall: h.primary,
+                        symmetry: r.symmetry,
+                        jawline: r.jawline,
+                        thirds: r.thirds,
+                        canthalTilt: r.canthalTilt,
+                        eyeSpacing: r.eyeSpacing,
+                        glowUpPotential: r.glowUpPotential,
+                        insight: r.insight,
+                        recommendations: r.recommendations,
+                        hairstyles: r.hairstyles
+                    )
+                }
+            }
             try? await Task.sleep(for: .seconds(1.0))
             // Photos are intentionally not retained — only the derived scores.
             let record = FaceScanRecord(

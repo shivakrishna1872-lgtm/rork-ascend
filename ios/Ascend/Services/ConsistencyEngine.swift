@@ -53,6 +53,51 @@ nonisolated enum ConsistencyEngine {
         return clamp(m - penalty + anchorBoost, 0, 100)
     }
 
+    // MARK: - Cross-metric harmonization
+    //
+    // PSL, physique, and calorie-derived scores all measure different things,
+    // but they describe the SAME person. In practice they should land in a
+    // similar range; a 90 physique with a 35 PSL is almost always noise from
+    // one bad photo, not reality. We gently pull them toward each other when
+    // the gap is moderate, leave them alone when the gap is small (already
+    // coherent), and ALSO leave them alone when the gap is huge (probably a
+    // real, meaningful difference worth surfacing instead of hiding).
+    //
+    // Bands (absolute point difference on 0…100 scale):
+    //   ≤  smallGap  →  no change (already consistent)
+    //   ≤  bigGap    →  pull each side a fraction toward the weighted center
+    //   >  bigGap    →  no change (real divergence, respect the data)
+    static func harmonize(
+        primary: Double,
+        primaryConfidence: Double,
+        secondary: Double,
+        secondaryConfidence: Double,
+        smallGap: Double = 8,
+        bigGap: Double = 25
+    ) -> (primary: Double, secondary: Double, adjusted: Bool) {
+        let p = clamp(primary, 0, 100)
+        let s = clamp(secondary, 0, 100)
+        let gap = abs(p - s)
+        guard gap > smallGap, gap <= bigGap else {
+            return (p, s, false)
+        }
+        let pc = clamp(primaryConfidence, 0, 1)
+        let sc = clamp(secondaryConfidence, 0, 1)
+        // Confidence-weighted center; if both equal we fall back to mean.
+        let totalConf = max(0.0001, pc + sc)
+        let center = (p * pc + s * sc) / totalConf
+        // Pull strength scales with how far into the moderate band we are.
+        // At smallGap → 0 pull, at bigGap → up to 0.45 pull.
+        let t = (gap - smallGap) / max(0.0001, bigGap - smallGap)
+        let maxPull = 0.45
+        // The lower-confidence side moves more, the higher-confidence side moves less.
+        let pullP = maxPull * t * (1 - pc / (pc + sc + 0.0001))
+        let pullS = maxPull * t * (1 - sc / (pc + sc + 0.0001))
+        let newP = p + (center - p) * pullP
+        let newS = s + (center - s) * pullS
+        return (clamp(newP, 0, 100), clamp(newS, 0, 100), true)
+    }
+
     private static func clamp<T: Comparable>(_ v: T, _ lo: T, _ hi: T) -> T {
         min(max(v, lo), hi)
     }

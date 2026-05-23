@@ -220,7 +220,10 @@ nonisolated struct AIService {
     private var baseURL: String { Config.EXPO_PUBLIC_TOOLKIT_URL }
     private var key: String { Config.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY }
     private let model = "google/gemini-2.5-flash"
-    private let fallbackModels = ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"]
+    private let fallbackModels = ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5", "google/gemini-2.0-flash", "openai/gpt-4o"]
+    // Max wall-clock budget per AI call (seconds). We'd rather wait a bit longer
+    // than fall back to an offline heuristic — users have asked for real-time AI.
+    private let totalBudget: TimeInterval = 90
 
     // MARK: - Public APIs
 
@@ -613,20 +616,32 @@ nonisolated struct AIService {
         guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
 
         let modelChain = [model] + fallbackModels
+        let start = Date()
         for modelId in modelChain {
+            if Date().timeIntervalSince(start) > totalBudget { break }
             let body: [String: Any] = [
                 "model": modelId,
                 "temperature": 0.4,
                 "messages": messages
             ]
-            do {
-                let reply: CoachReply = try await postChat(body: body)
-                return reply
-            } catch {
-                continue
+            // 3 attempts per model with progressive backoff before moving to next fallback.
+            for attempt in 0..<3 {
+                if Date().timeIntervalSince(start) > totalBudget { break }
+                do {
+                    let reply: CoachReply = try await postChat(body: body)
+                    return reply
+                } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    break // next model
+                } catch {
+                    let delay: UInt64 = attempt == 0 ? 400_000_000 : 1_200_000_000
+                    try? await Task.sleep(nanoseconds: delay)
+                    if attempt < 2 { continue }
+                    break
+                }
             }
         }
-        // Universal fallback — deterministic on-device reply. Never surfaces an API error.
+        // Last-resort deterministic on-device reply. Should be rare now.
         return CoachHeuristic.chatReply(history: history, context: context)
     }
 
@@ -673,29 +688,43 @@ nonisolated struct AIService {
                 ["role": "user", "content": prompt]
             ]
         ]
-        // Try primary model, then fallbacks on payment/rate/server errors. Retry once per model on transient network errors.
+        // Try primary model, then fallbacks. 3 attempts per model with progressive backoff.
+        // Goal: prefer real AI over offline heuristic. Only give up after exhausting the chain.
         let modelChain = [model] + fallbackModels
+        let start = Date()
         var lastError: Error = AIServiceError.empty
         for modelId in modelChain {
+            if Date().timeIntervalSince(start) > totalBudget { break }
             var b = body
             b["model"] = modelId
-            for attempt in 0..<2 {
+            for attempt in 0..<3 {
+                if Date().timeIntervalSince(start) > totalBudget { break }
                 do {
                     return try await postChat(body: b)
                 } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
                     lastError = AIServiceError.http(code)
-                    break // try next model
+                    // Brief backoff then try next model — these are provider-wide.
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    break
                 } catch AIServiceError.http(let code) {
                     lastError = AIServiceError.http(code)
-                    if attempt == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                    let delay: UInt64 = attempt == 0 ? 400_000_000 : 1_200_000_000
+                    try? await Task.sleep(nanoseconds: delay)
+                    if attempt < 2 { continue }
                     break
                 } catch AIServiceError.decode {
                     lastError = AIServiceError.decode
-                    if attempt == 0 { continue }
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: 300_000_000); continue }
+                    break
+                } catch AIServiceError.empty {
+                    lastError = AIServiceError.empty
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: 300_000_000); continue }
                     break
                 } catch {
                     lastError = error
-                    if attempt == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                    let delay: UInt64 = attempt == 0 ? 500_000_000 : 1_500_000_000
+                    try? await Task.sleep(nanoseconds: delay)
+                    if attempt < 2 { continue }
                     break
                 }
             }
@@ -719,8 +748,11 @@ nonisolated struct AIService {
 
         var lastError: Error = AIServiceError.empty
         let modelChain = [model] + fallbackModels
+        let start = Date()
         for modelId in modelChain {
+            if Date().timeIntervalSince(start) > totalBudget { break }
             for attempt in attempts {
+                if Date().timeIntervalSince(start) > totalBudget { break }
                 let parts = buildVisionParts(prompt: prompt, images: images, maxDim: attempt.maxDim, quality: attempt.quality)
                 let body: [String: Any] = [
                     "model": modelId,
@@ -730,8 +762,9 @@ nonisolated struct AIService {
                         ["role": "user", "content": parts]
                     ]
                 ]
-                // Retry once per (model, size) on decode/transient network errors.
-                for retry in 0..<2 {
+                // Up to 3 retries per (model, size) on transient/decode errors before shrinking images.
+                for retry in 0..<3 {
+                    if Date().timeIntervalSince(start) > totalBudget { break }
                     do {
                         return try await postChat(body: body)
                     } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
@@ -739,14 +772,21 @@ nonisolated struct AIService {
                         break // shrink images (next attempt)
                     } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
                         lastError = AIServiceError.http(code)
-                        // try next model
-                        break
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        break // try next model
                     } catch AIServiceError.decode {
                         lastError = AIServiceError.decode
-                        if retry == 0 { continue } else { break }
+                        if retry < 2 { try? await Task.sleep(nanoseconds: 300_000_000); continue }
+                        break
+                    } catch AIServiceError.empty {
+                        lastError = AIServiceError.empty
+                        if retry < 2 { try? await Task.sleep(nanoseconds: 300_000_000); continue }
+                        break
                     } catch {
                         lastError = error
-                        if retry == 0 { try? await Task.sleep(nanoseconds: 400_000_000); continue }
+                        let delay: UInt64 = retry == 0 ? 500_000_000 : 1_500_000_000
+                        try? await Task.sleep(nanoseconds: delay)
+                        if retry < 2 { continue }
                         break
                     }
                 }
@@ -782,7 +822,7 @@ nonisolated struct AIService {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        req.timeoutInterval = 60
+        req.timeoutInterval = 75
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, resp) = try await URLSession.shared.data(for: req)

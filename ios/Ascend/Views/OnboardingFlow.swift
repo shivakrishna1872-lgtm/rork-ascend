@@ -26,13 +26,14 @@ struct OnboardingFlow: View {
     @State private var idealWeightKg: Double? = nil
     @State private var idealWeightTouched = false
     @State private var weightPaceKgPerWeek: Double = 0
+    @State private var idealAesthetic: IdealAesthetic? = nil
 
     var body: some View {
         ZStack {
             VStack {
                 if step > 0 {
                     HStack(spacing: 6) {
-                        ForEach(0..<7, id: \.self) { i in
+                        ForEach(0..<8, id: \.self) { i in
                             Capsule()
                                 .fill(i <= step ? Theme.accent : Theme.line)
                                 .frame(height: 3)
@@ -51,8 +52,9 @@ struct OnboardingFlow: View {
                 case 1: personal
                 case 2: bodyDims
                 case 3: idealWeightStep
-                case 4: goalsStep
-                case 5: activityStep
+                case 4: aestheticStep
+                case 5: goalsStep
+                case 6: activityStep
                 default: permissionsStep
                 }
             }
@@ -424,6 +426,54 @@ struct OnboardingFlow: View {
         return max(1, Int(weeks.rounded()))
     }
 
+    private var aestheticStep: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            stepHeader(title: "Ideal aesthetic",
+                       caption: "What body do you want to build? We tailor exercise selection and volume.")
+
+            VStack(spacing: 10) {
+                ForEach(IdealAesthetic.allCases) { a in
+                    let on = idealAesthetic == a
+                    Button {
+                        Haptics.tap()
+                        withAnimation(.spring) { idealAesthetic = a }
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill((on ? Theme.accent : Theme.surface).opacity(on ? 0.25 : 0.6))
+                                Image(systemName: a.icon)
+                                    .font(.system(size: 19, weight: .bold))
+                                    .foregroundStyle(on ? Theme.accentGlow : Theme.textSecondary)
+                            }
+                            .frame(width: 46, height: 46)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(a.rawValue)
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text(a.caption)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                            ZStack {
+                                Circle().strokeBorder(on ? Theme.accent : Theme.lineStrong, lineWidth: 1.2)
+                                if on { Circle().fill(Theme.accent).padding(4) }
+                            }.frame(width: 22, height: 22)
+                        }
+                        .padding(14)
+                        .glassCard(radius: 16)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Spacer(minLength: 0)
+            primaryNext(enabled: idealAesthetic != nil)
+        }
+    }
+
     private var goalsStep: some View {
         VStack(alignment: .leading, spacing: 22) {
             stepHeader(title: "Your direction", caption: "Pick up to three — we adapt.")
@@ -535,7 +585,7 @@ struct OnboardingFlow: View {
     }
 
     private func primaryNext(enabled: Bool = true) -> some View {
-        PrimaryButton(title: step >= 5 ? "Continue" : "Next", icon: "arrow.right") {
+        PrimaryButton(title: step >= 6 ? "Continue" : "Next", icon: "arrow.right") {
             if enabled { advance() }
         }
         .opacity(enabled ? 1 : 0.5)
@@ -620,6 +670,7 @@ struct OnboardingFlow: View {
 
         let finalIdealWeight = idealWeightKg ?? 0
         let finalPace = weightPaceKgPerWeek
+        let finalAestheticRaw = idealAesthetic?.rawValue ?? ""
 
         if let existing {
             existing.name = finalName
@@ -632,6 +683,7 @@ struct OnboardingFlow: View {
             existing.unitSystemRaw = unitSystem.rawValue
             existing.idealWeightKg = finalIdealWeight
             existing.weightPaceKgPerWeek = finalPace
+            existing.idealAestheticRaw = finalAestheticRaw
             existing.onboarded = true
             if let appleUserId { existing.appleUserId = appleUserId }
             if let email { existing.email = email }
@@ -649,7 +701,8 @@ struct OnboardingFlow: View {
                 email: email,
                 unitSystemRaw: unitSystem.rawValue,
                 idealWeightKg: finalIdealWeight,
-                weightPaceKgPerWeek: finalPace
+                weightPaceKgPerWeek: finalPace,
+                idealAestheticRaw: finalAestheticRaw
             )
             ctx.insert(u)
         }

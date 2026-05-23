@@ -132,6 +132,46 @@ enum Sex: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Target physique archetype the user is training toward. Used to bias the
+/// deterministic plan generator (exercise selection, isolation volume,
+/// conditioning ratio) without overriding the explicit `WorkoutGoal`.
+enum IdealAesthetic: String, CaseIterable, Codable, Identifiable, Sendable {
+    case lean = "Lean"
+    case athletic = "Athletic"
+    case muscular = "Muscular"
+    case powerlifter = "Powerlifter"
+    case model = "Aesthetic"
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .lean: "figure.run"
+        case .athletic: "figure.cross.training"
+        case .muscular: "figure.strengthtraining.traditional"
+        case .powerlifter: "dumbbell.fill"
+        case .model: "sparkles"
+        }
+    }
+    var caption: String {
+        switch self {
+        case .lean: "Low body fat. Defined, light, mobile."
+        case .athletic: "Balanced muscle + conditioning. Sport-ready."
+        case .muscular: "Maximum hypertrophy. Size first."
+        case .powerlifter: "Heavy compounds. Raw strength."
+        case .model: "V-taper, shoulders, arms, abs. Stage-lean."
+        }
+    }
+    /// Default goal recommendation if the user hasn't set one explicitly.
+    var suggestedGoal: WorkoutGoal {
+        switch self {
+        case .lean: .fatLoss
+        case .athletic: .athletic
+        case .muscular: .hypertrophy
+        case .powerlifter: .strength
+        case .model: .hypertrophy
+        }
+    }
+}
+
 /// User-selected measurement system. Affects how heights, weights and
 /// calories are displayed throughout the app, and is passed to the AI so
 /// responses match the units the user prefers.

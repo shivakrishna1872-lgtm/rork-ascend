@@ -32,7 +32,8 @@ nonisolated enum WorkoutPlanGenerator {
         case shoulder, elbow, wrist, lowerBack, knee, hip, ankle
     }
 
-    static let library: [LibraryExercise] = [
+    static let library: [LibraryExercise] = baseLibrary
+    private static let baseLibrary: [LibraryExercise] = [
         // Horizontal push
         .init(name: "Barbell Bench Press",      muscle: .chest, pattern: .horizontalPush, equipment: [.gym], difficulty: .intermediate, isCompound: true, stresses: [.shoulder, .elbow, .wrist]),
         .init(name: "Dumbbell Bench Press",     muscle: .chest, pattern: .horizontalPush, equipment: [.gym, .home, .dumbbells], difficulty: .beginner, isCompound: true, stresses: [.shoulder, .elbow]),
@@ -99,7 +100,21 @@ nonisolated enum WorkoutPlanGenerator {
         .init(name: "Burpee",                   muscle: .conditioning, pattern: .conditioning, equipment: [.none, .home, .gym], difficulty: .intermediate, isCompound: true, stresses: [.wrist, .knee]),
         .init(name: "Mountain Climber",         muscle: .conditioning, pattern: .conditioning, equipment: [.none, .home, .gym], difficulty: .beginner, isCompound: true, stresses: [.wrist]),
         .init(name: "Rowing Machine",           muscle: .conditioning, pattern: .conditioning, equipment: [.gym], difficulty: .beginner, isCompound: true, stresses: []),
-        .init(name: "Jump Rope",                muscle: .conditioning, pattern: .conditioning, equipment: [.none, .home, .gym], difficulty: .beginner, isCompound: true, stresses: [.ankle, .knee])
+        .init(name: "Jump Rope",                muscle: .conditioning, pattern: .conditioning, equipment: [.none, .home, .gym], difficulty: .beginner, isCompound: true, stresses: [.ankle, .knee]),
+        .init(name: "Incline Treadmill Walk",   muscle: .conditioning, pattern: .conditioning, equipment: [.gym], difficulty: .beginner, isCompound: true, stresses: []),
+        .init(name: "Stair Climber",            muscle: .conditioning, pattern: .conditioning, equipment: [.gym], difficulty: .beginner, isCompound: true, stresses: [.knee]),
+        .init(name: "Air Bike Sprint",          muscle: .conditioning, pattern: .conditioning, equipment: [.gym], difficulty: .intermediate, isCompound: true, stresses: []),
+
+        // Extra isolation work (aesthetic-focused)
+        .init(name: "Preacher Curl",            muscle: .biceps, pattern: .isolation, equipment: [.gym], difficulty: .beginner, isCompound: false, stresses: [.elbow]),
+        .init(name: "Cable Triceps Kickback",   muscle: .triceps, pattern: .isolation, equipment: [.gym], difficulty: .beginner, isCompound: false, stresses: [.elbow]),
+        .init(name: "Cable Lateral Raise",      muscle: .shoulders, pattern: .isolation, equipment: [.gym], difficulty: .beginner, isCompound: false, stresses: [.shoulder]),
+        .init(name: "Rear Delt Fly",            muscle: .shoulders, pattern: .isolation, equipment: [.gym, .dumbbells], difficulty: .beginner, isCompound: false, stresses: [.shoulder]),
+        .init(name: "Leg Extension",            muscle: .quads, pattern: .isolation, equipment: [.gym], difficulty: .beginner, isCompound: false, stresses: [.knee]),
+        .init(name: "Glute Kickback",           muscle: .glutes, pattern: .isolation, equipment: [.gym, .home], difficulty: .beginner, isCompound: false, stresses: [.hip]),
+        .init(name: "Pec Deck",                 muscle: .chest, pattern: .isolation, equipment: [.gym], difficulty: .beginner, isCompound: false, stresses: [.shoulder]),
+        .init(name: "Hanging Knee Raise",       muscle: .core, pattern: .core, equipment: [.gym, .home], difficulty: .beginner, isCompound: false, stresses: [.shoulder]),
+        .init(name: "Ab Wheel Rollout",         muscle: .core, pattern: .core, equipment: [.gym, .home], difficulty: .intermediate, isCompound: false, stresses: [.lowerBack])
     ]
 
     // MARK: - Day templates
@@ -128,13 +143,15 @@ nonisolated enum WorkoutPlanGenerator {
     /// Deterministically build a plan from user profile + preferences.
     static func generate(profile: UserProfile, prefs: WorkoutPreferences) -> GeneratedPlan {
         let prefs = sanitize(prefs)
-        let templates = templates(for: prefs.daysPerWeek)
+        let aesthetic = profile.idealAesthetic
+        let templates = templates(for: prefs.daysPerWeek, sessionLength: prefs.sessionLength, aesthetic: aesthetic)
         let injuries = parseInjuries(prefs.injuries)
+        let seed = profileSeed(profile)
 
         var dayPlans: [DayPlan] = []
         for (idx, tpl) in templates.enumerated() {
             var exercises: [ExercisePick] = []
-            // Use a deterministic per-slot picker (stable index into filtered list).
+            var usedNames: Set<String> = []
             for (slotIdx, slot) in tpl.slots.enumerated() {
                 guard let pick = chooseExercise(
                     pattern: slot.pattern,
@@ -144,21 +161,27 @@ nonisolated enum WorkoutPlanGenerator {
                     injuries: injuries,
                     dayIndex: idx,
                     slotIndex: slotIdx,
-                    profileSeed: profileSeed(profile)
+                    profileSeed: seed,
+                    avoid: usedNames
                 ) else { continue }
-                let (sets, reps, rest) = setRepRest(role: slot.role, exercise: pick, goal: prefs.goal, level: prefs.level)
+                usedNames.insert(pick.name)
+                let (sets, reps, rest) = setRepRest(role: slot.role, exercise: pick, goal: prefs.goal, level: prefs.level, aesthetic: aesthetic)
+                let warmup = warmupSets(role: slot.role, exercise: pick, level: prefs.level)
+                let tempo = tempoFor(role: slot.role, goal: prefs.goal)
                 exercises.append(ExercisePick(
                     exercise: pick,
                     sets: sets,
                     reps: reps,
                     restSeconds: rest,
-                    notes: noteFor(role: slot.role, pick: pick, goal: prefs.goal)
+                    notes: noteFor(role: slot.role, pick: pick, goal: prefs.goal),
+                    warmupSets: warmup,
+                    tempo: tempo
                 ))
             }
             dayPlans.append(DayPlan(title: tpl.title, focus: tpl.focus, exercises: exercises))
         }
 
-        let title = generatedTitle(prefs: prefs)
+        let title = generatedTitle(prefs: prefs, aesthetic: aesthetic)
         let hash = inputHash(profile: profile, prefs: prefs)
         return GeneratedPlan(title: title, goal: prefs.goal, days: dayPlans, inputHash: hash, preferences: prefs)
     }
@@ -183,48 +206,125 @@ nonisolated enum WorkoutPlanGenerator {
         let reps: String
         let restSeconds: Int
         let notes: String
+        let warmupSets: Int
+        let tempo: String
     }
 
     // MARK: - Templates by frequency
 
-    private static func templates(for days: Int) -> [DayTemplate] {
-        switch max(1, min(7, days)) {
-        case 1, 2:
-            return [
-                fullBody(title: "Day 1", focus: "Full Body A"),
-                fullBody(title: "Day 2", focus: "Full Body B")
-            ].prefix(days).map { $0 }
-        case 3:
-            return [
-                fullBody(title: "Day 1", focus: "Full Body A"),
-                fullBody(title: "Day 2", focus: "Full Body B"),
-                fullBody(title: "Day 3", focus: "Full Body C")
-            ]
-        case 4:
-            return [
-                upperBody(title: "Day 1", focus: "Upper Body"),
-                lowerBody(title: "Day 2", focus: "Lower Body"),
-                upperBody(title: "Day 3", focus: "Upper Body"),
-                lowerBody(title: "Day 4", focus: "Lower Body")
-            ]
-        case 5:
-            return [
-                push(title: "Day 1", focus: "Push"),
-                pull(title: "Day 2", focus: "Pull"),
-                legs(title: "Day 3", focus: "Legs"),
-                upperBody(title: "Day 4", focus: "Upper Body"),
-                lowerBody(title: "Day 5", focus: "Lower Body")
-            ]
-        default: // 6+
-            return [
-                push(title: "Day 1", focus: "Push"),
-                pull(title: "Day 2", focus: "Pull"),
-                legs(title: "Day 3", focus: "Legs"),
-                push(title: "Day 4", focus: "Push"),
-                pull(title: "Day 5", focus: "Pull"),
-                legs(title: "Day 6", focus: "Legs")
-            ].prefix(days).map { $0 }
+    private static func templates(for days: Int, sessionLength: SessionLength, aesthetic: IdealAesthetic?) -> [DayTemplate] {
+        let baseTemplates: [DayTemplate] = {
+            switch max(1, min(7, days)) {
+            case 1, 2:
+                return [
+                    fullBody(title: "Day 1", focus: "Full Body A"),
+                    fullBody(title: "Day 2", focus: "Full Body B")
+                ].prefix(days).map { $0 }
+            case 3:
+                return [
+                    fullBody(title: "Day 1", focus: "Full Body A"),
+                    fullBody(title: "Day 2", focus: "Full Body B"),
+                    fullBody(title: "Day 3", focus: "Full Body C")
+                ]
+            case 4:
+                return [
+                    upperBody(title: "Day 1", focus: "Upper Body"),
+                    lowerBody(title: "Day 2", focus: "Lower Body"),
+                    upperBody(title: "Day 3", focus: "Upper Body"),
+                    lowerBody(title: "Day 4", focus: "Lower Body")
+                ]
+            case 5:
+                return [
+                    push(title: "Day 1", focus: "Push"),
+                    pull(title: "Day 2", focus: "Pull"),
+                    legs(title: "Day 3", focus: "Legs"),
+                    upperBody(title: "Day 4", focus: "Upper Body"),
+                    lowerBody(title: "Day 5", focus: "Lower Body")
+                ]
+            default: // 6+
+                return [
+                    push(title: "Day 1", focus: "Push"),
+                    pull(title: "Day 2", focus: "Pull"),
+                    legs(title: "Day 3", focus: "Legs"),
+                    push(title: "Day 4", focus: "Push"),
+                    pull(title: "Day 5", focus: "Pull"),
+                    legs(title: "Day 6", focus: "Legs")
+                ].prefix(days).map { $0 }
+            }
+        }()
+        // Apply session length scaling + aesthetic biasing to each template.
+        return baseTemplates.map { applyScale($0, sessionLength: sessionLength, aesthetic: aesthetic) }
+    }
+
+    /// Scales template by adding or removing slots based on session length and
+    /// aesthetic preference. Pure function — deterministic.
+    private static func applyScale(_ tpl: DayTemplate, sessionLength: SessionLength, aesthetic: IdealAesthetic?) -> DayTemplate {
+        var slots = tpl.slots
+        // Aesthetic biasing: append extra slots up-front (before scaling).
+        switch aesthetic {
+        case .muscular:
+            slots.append(Slot(pattern: .isolation, muscle: dominantMuscle(focus: tpl.focus), role: .isolation))
+            slots.append(Slot(pattern: .isolation, muscle: secondaryMuscle(focus: tpl.focus), role: .isolation))
+        case .model:
+            slots.append(Slot(pattern: .isolation, muscle: .shoulders, role: .isolation))
+            slots.append(Slot(pattern: .isolation, muscle: dominantMuscle(focus: tpl.focus), role: .isolation))
+            if !tpl.focus.lowercased().contains("leg") {
+                slots.append(Slot(pattern: .core, muscle: .core, role: .core))
+            }
+        case .lean:
+            slots.append(Slot(pattern: .conditioning, muscle: .conditioning, role: .conditioning))
+        case .athletic:
+            slots.append(Slot(pattern: .conditioning, muscle: .conditioning, role: .conditioning))
+        case .powerlifter:
+            // Powerlifters don't add accessories; rely on heavier sets/longer rest.
+            break
+        case .none:
+            break
         }
+        // Session length scaling: add or trim slots while preserving compounds first.
+        let bonus = sessionLength.bonusSlots
+        if bonus > 0 {
+            // Add isolation/conditioning fillers.
+            for i in 0..<bonus {
+                if i % 2 == 0 {
+                    slots.append(Slot(pattern: .isolation, muscle: secondaryMuscle(focus: tpl.focus), role: .isolation))
+                } else {
+                    slots.append(Slot(pattern: .core, muscle: .core, role: .core))
+                }
+            }
+        } else if bonus < 0 {
+            // Trim accessories/isolation first, never primary compounds.
+            var trimmed = slots
+            var toRemove = -bonus
+            while toRemove > 0 {
+                if let idx = trimmed.lastIndex(where: { $0.role == .isolation || $0.role == .core || $0.role == .conditioning }) {
+                    trimmed.remove(at: idx)
+                    toRemove -= 1
+                } else if let idx = trimmed.lastIndex(where: { $0.role == .accessory }) {
+                    trimmed.remove(at: idx)
+                    toRemove -= 1
+                } else { break }
+            }
+            slots = trimmed
+        }
+        return DayTemplate(title: tpl.title, focus: tpl.focus, slots: slots)
+    }
+
+    private static func dominantMuscle(focus: String) -> Muscle {
+        let f = focus.lowercased()
+        if f.contains("push") || f.contains("chest") { return .chest }
+        if f.contains("pull") || f.contains("back") { return .back }
+        if f.contains("leg") || f.contains("lower") { return .quads }
+        if f.contains("upper") { return .shoulders }
+        return .chest
+    }
+    private static func secondaryMuscle(focus: String) -> Muscle {
+        let f = focus.lowercased()
+        if f.contains("push") { return .triceps }
+        if f.contains("pull") { return .biceps }
+        if f.contains("leg") || f.contains("lower") { return .hamstrings }
+        if f.contains("upper") { return .biceps }
+        return .triceps
     }
 
     private static func fullBody(title: String, focus: String) -> DayTemplate {
@@ -295,7 +395,8 @@ nonisolated enum WorkoutPlanGenerator {
         injuries: Set<Joint>,
         dayIndex: Int,
         slotIndex: Int,
-        profileSeed: UInt64
+        profileSeed: UInt64,
+        avoid: Set<String>
     ) -> LibraryExercise? {
         // Filter by pattern/muscle, equipment availability, injuries.
         var candidates = library.filter { ex in
@@ -327,13 +428,18 @@ nonisolated enum WorkoutPlanGenerator {
         let tiered = candidates.filter { preferredDifficulty.contains($0.difficulty) }
         let pool = tiered.isEmpty ? candidates : tiered
 
-        // Deterministic stable sort + pick.
+        // Deterministic stable sort + pick. Skip names already used on this
+        // day so we don't double-list the same exercise.
         let sorted = pool.sorted { $0.name < $1.name }
-        let idx = Int(((profileSeed &+ UInt64(dayIndex &* 31) &+ UInt64(slotIndex &* 7)) % UInt64(sorted.count)))
-        return sorted[idx]
+        let startIdx = Int(((profileSeed &+ UInt64(dayIndex &* 31) &+ UInt64(slotIndex &* 7)) % UInt64(sorted.count)))
+        for offset in 0..<sorted.count {
+            let i = (startIdx + offset) % sorted.count
+            if !avoid.contains(sorted[i].name) { return sorted[i] }
+        }
+        return sorted[startIdx]
     }
 
-    private static func setRepRest(role: Role, exercise: LibraryExercise, goal: WorkoutGoal, level: FitnessLevel) -> (Int, String, Int) {
+    private static func setRepRest(role: Role, exercise: LibraryExercise, goal: WorkoutGoal, level: FitnessLevel, aesthetic: IdealAesthetic?) -> (Int, String, Int) {
         let rest: Int = {
             if exercise.pattern == .isolation { return 60 }
             if exercise.pattern == .core { return 45 }
@@ -379,7 +485,30 @@ nonisolated enum WorkoutPlanGenerator {
             case .conditioning:      return (4, "30s", 60)
             }
         }
-        _ = level // reserved for future tweaks
+    }
+
+    private static func warmupSets(role: Role, exercise: LibraryExercise, level: FitnessLevel) -> Int {
+        switch role {
+        case .primaryCompound:
+            return level == .beginner ? 1 : 2
+        case .secondaryCompound:
+            return level == .advanced ? 1 : 0
+        case .accessory, .isolation, .core, .conditioning:
+            return 0
+        }
+    }
+
+    private static func tempoFor(role: Role, goal: WorkoutGoal) -> String {
+        switch role {
+        case .primaryCompound:
+            return goal == .strength ? "" : "3-1-1"
+        case .secondaryCompound:
+            return goal == .hypertrophy ? "3-1-1" : ""
+        case .accessory, .isolation:
+            return goal == .hypertrophy ? "2-1-2" : ""
+        case .core, .conditioning:
+            return ""
+        }
     }
 
     private static func noteFor(role: Role, pick: LibraryExercise, goal: WorkoutGoal) -> String {
@@ -433,12 +562,15 @@ nonisolated enum WorkoutPlanGenerator {
     }
 
     private static func inputHash(profile: UserProfile, prefs: WorkoutPreferences) -> String {
-        let payload = "\(profile.ageValue)|\(profile.sexRaw)|\(Int(profile.heightCm))|\(Int(profile.weightKg))|\(prefs.level.rawValue)|\(prefs.goal.rawValue)|\(prefs.equipment.rawValue)|\(prefs.daysPerWeek)|\(prefs.injuries.sorted().joined(separator: ","))"
+        let payload = "\(profile.ageValue)|\(profile.sexRaw)|\(Int(profile.heightCm))|\(Int(profile.weightKg))|\(prefs.level.rawValue)|\(prefs.goal.rawValue)|\(prefs.equipment.rawValue)|\(prefs.daysPerWeek)|\(prefs.injuries.sorted().joined(separator: ","))|\(prefs.sessionLength.rawValue)|\(profile.idealAestheticRaw)"
         let digest = SHA256.hash(data: Data(payload.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func generatedTitle(prefs: WorkoutPreferences) -> String {
-        "\(prefs.daysPerWeek)-Day \(prefs.goal.rawValue) Plan"
+    private static func generatedTitle(prefs: WorkoutPreferences, aesthetic: IdealAesthetic?) -> String {
+        if let a = aesthetic {
+            return "\(prefs.daysPerWeek)-Day \(a.rawValue) \(prefs.goal.rawValue)"
+        }
+        return "\(prefs.daysPerWeek)-Day \(prefs.goal.rawValue) Plan"
     }
 }

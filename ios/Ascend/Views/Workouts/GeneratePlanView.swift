@@ -13,6 +13,7 @@ struct GeneratePlanView: View {
     @State private var prefs: WorkoutPreferences = WorkoutPreferences.load()
     @State private var injuryText: String = ""
     @State private var generating: Bool = false
+    @State private var didInitFromProfile: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -21,11 +22,15 @@ struct GeneratePlanView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         profileSummary
+                        targetCard
                         section("Fitness Level") {
                             segmented(selection: $prefs.level)
                         }
                         section("Goal") {
                             segmented(selection: $prefs.goal)
+                        }
+                        section("Session Length") {
+                            sessionLengthPicker
                         }
                         section("Equipment") {
                             segmented(selection: $prefs.equipment)
@@ -85,6 +90,102 @@ struct GeneratePlanView: View {
                     Button("Cancel") { dismiss() }
                         .foregroundStyle(Theme.textSecondary)
                 }
+            }
+            .onAppear { initFromProfileIfNeeded() }
+        }
+    }
+
+    private func initFromProfileIfNeeded() {
+        guard !didInitFromProfile else { return }
+        didInitFromProfile = true
+        // Auto-suggest goal from ideal aesthetic / pace direction the first
+        // time this form opens, so the user sees a plan that matches what they
+        // already told us in onboarding.
+        if let a = user.idealAesthetic {
+            prefs.goal = a.suggestedGoal
+        } else if user.weightPaceKgPerWeek < 0 {
+            prefs.goal = .fatLoss
+        } else if user.weightPaceKgPerWeek > 0 {
+            prefs.goal = .hypertrophy
+        }
+    }
+
+    // MARK: - Target summary
+
+    private var targetCard: some View {
+        let aesthetic = user.idealAesthetic
+        let weeks = user.weeksToGoal
+        let hasTarget = user.idealWeightKg > 0
+        return HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Theme.accentGlow.opacity(0.18))
+                Image(systemName: aesthetic?.icon ?? "target")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Theme.accentGlow)
+            }
+            .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(aesthetic?.rawValue.uppercased() ?? "NO AESTHETIC SET")
+                    .font(.system(size: 10, weight: .heavy)).tracking(1.6)
+                    .foregroundStyle(Theme.accentGlow)
+                if hasTarget {
+                    Text("\(user.unitSystem.formatWeight(kg: user.weightKg)) → \(user.unitSystem.formatWeight(kg: user.idealWeightKg))")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    if let w = weeks {
+                        Text("~\(w) week\(w == 1 ? "" : "s") at your pace")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                    } else {
+                        Text(aesthetic?.caption ?? "Maintenance training.")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                } else {
+                    Text(aesthetic?.caption ?? "Tap to set goals in Profile.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.accentGlow.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.accentGlow.opacity(0.3), lineWidth: 0.7))
+    }
+
+    // MARK: - Session length
+
+    private var sessionLengthPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(SessionLength.allCases) { item in
+                let on = prefs.sessionLength == item
+                Button {
+                    Haptics.tap()
+                    prefs.sessionLength = item
+                } label: {
+                    VStack(spacing: 2) {
+                        Text(item.rawValue)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(on ? Theme.bg : Theme.textPrimary)
+                        Text(item.minutesLabel)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(on ? Theme.bg.opacity(0.7) : Theme.textTertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11)
+                            .fill(on ? Theme.accentGlow : Theme.surface.opacity(0.55))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11)
+                            .strokeBorder(on ? Theme.accentGlow : Theme.lineStrong, lineWidth: 0.6)
+                    )
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -223,7 +324,9 @@ struct GeneratePlanView: View {
                     notes: pick.notes,
                     muscleGroup: pick.exercise.muscle.rawValue,
                     equipment: prefs.equipment.rawValue,
-                    difficulty: pick.exercise.difficulty.rawValue
+                    difficulty: pick.exercise.difficulty.rawValue,
+                    warmupSets: pick.warmupSets,
+                    tempo: pick.tempo
                 )
                 ex.day = d
                 ctx.insert(ex)

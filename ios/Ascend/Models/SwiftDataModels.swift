@@ -33,6 +33,8 @@ final class UserProfile {
     /// Desired rate of weight change in kg per week. Sign mirrors direction:
     /// negative = cut, positive = gain, 0 = maintain.
     var weightPaceKgPerWeek: Double = 0
+    /// Target physique archetype (see `IdealAesthetic`). Empty = no preference.
+    var idealAestheticRaw: String = ""
 
     init(
         name: String = "Athlete",
@@ -59,7 +61,8 @@ final class UserProfile {
         proteinOverrideValue: Int = 0,
         proteinOverrideUntil: Date? = nil,
         idealWeightKg: Double = 0,
-        weightPaceKgPerWeek: Double = 0
+        weightPaceKgPerWeek: Double = 0,
+        idealAestheticRaw: String = ""
     ) {
         self.name = name
         self.ageValue = ageValue
@@ -86,6 +89,12 @@ final class UserProfile {
         self.proteinOverrideUntil = proteinOverrideUntil
         self.idealWeightKg = idealWeightKg
         self.weightPaceKgPerWeek = weightPaceKgPerWeek
+        self.idealAestheticRaw = idealAestheticRaw
+    }
+
+    /// Resolved aesthetic preference, nil if the user skipped the question.
+    var idealAesthetic: IdealAesthetic? {
+        IdealAesthetic(rawValue: idealAestheticRaw)
     }
 
     var sex: Sex { Sex(rawValue: sexRaw) ?? .male }

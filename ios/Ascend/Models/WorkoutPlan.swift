@@ -82,6 +82,10 @@ final class WorkoutExercise {
     var muscleGroup: String
     var equipment: String
     var difficulty: String
+    /// Optional ramp-up sets performed before working sets. 0 = none.
+    var warmupSets: Int = 0
+    /// Optional tempo prescription (e.g. "3-1-1"). Empty = no prescription.
+    var tempo: String = ""
     var day: WorkoutDay?
 
     init(
@@ -94,7 +98,9 @@ final class WorkoutExercise {
         notes: String = "",
         muscleGroup: String = "",
         equipment: String = "",
-        difficulty: String = ""
+        difficulty: String = "",
+        warmupSets: Int = 0,
+        tempo: String = ""
     ) {
         self.id = id
         self.orderIndex = orderIndex
@@ -106,6 +112,17 @@ final class WorkoutExercise {
         self.muscleGroup = muscleGroup
         self.equipment = equipment
         self.difficulty = difficulty
+        self.warmupSets = warmupSets
+        self.tempo = tempo
+    }
+
+    /// Rough time estimate per exercise: sets × (avg rep duration + rest) + warmup ramp.
+    /// Used to surface session length in the UI. Deterministic.
+    var estimatedSeconds: Int {
+        let avgRepSecs = 30 // rough work time per set
+        let work = sets * (avgRepSecs + restSeconds)
+        let warmup = warmupSets * (avgRepSecs + 30)
+        return work + warmup
     }
 }
 
@@ -139,6 +156,33 @@ nonisolated enum EquipmentLevel: String, Codable, CaseIterable, Sendable, Identi
     var id: String { rawValue }
 }
 
+/// Total session size — scales the number of slots per day (and therefore
+/// session length). Lets users pick "in and out" vs "long bodybuilder session".
+nonisolated enum SessionLength: String, Codable, CaseIterable, Sendable, Identifiable {
+    case quick = "Quick"        // ~30 min
+    case standard = "Standard"  // ~50 min
+    case long = "Long"          // ~70 min
+    case marathon = "Marathon"  // 90+ min
+    var id: String { rawValue }
+    var minutesLabel: String {
+        switch self {
+        case .quick: "30 min"
+        case .standard: "45–55 min"
+        case .long: "60–75 min"
+        case .marathon: "90+ min"
+        }
+    }
+    /// Extra exercise slots layered on top of the template baseline.
+    var bonusSlots: Int {
+        switch self {
+        case .quick: -2
+        case .standard: 0
+        case .long: 2
+        case .marathon: 4
+        }
+    }
+}
+
 /// User-editable inputs that drive the deterministic generator. Persisted on
 /// the plan + cached in UserDefaults so the form remembers last selections.
 nonisolated struct WorkoutPreferences: Codable, Hashable, Sendable {
@@ -147,16 +191,23 @@ nonisolated struct WorkoutPreferences: Codable, Hashable, Sendable {
     var equipment: EquipmentLevel
     var daysPerWeek: Int
     var injuries: [String]
+    /// Defaults to standard if missing in older persisted prefs.
+    var sessionLengthRaw: String = SessionLength.standard.rawValue
+    var sessionLength: SessionLength {
+        get { SessionLength(rawValue: sessionLengthRaw) ?? .standard }
+        set { sessionLengthRaw = newValue.rawValue }
+    }
 
     static let `default` = WorkoutPreferences(
         level: .intermediate,
         goal: .hypertrophy,
         equipment: .gym,
         daysPerWeek: 4,
-        injuries: []
+        injuries: [],
+        sessionLengthRaw: SessionLength.standard.rawValue
     )
 
-    static let storageKey = "ascend.workout.prefs.v1"
+    static let storageKey = "ascend.workout.prefs.v2"
 
     static func load() -> WorkoutPreferences {
         guard let data = UserDefaults.standard.data(forKey: storageKey),

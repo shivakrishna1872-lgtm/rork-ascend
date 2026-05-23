@@ -20,6 +20,9 @@ struct WorkoutsHubView: View {
                 AmbientBackground(intensity: 0.6).ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 16) {
+                        if let primary = plans.first {
+                            thisWeekCard(primary)
+                        }
                         RecoveryBadgeView()
                         creationCards
                         templatesButton
@@ -65,6 +68,90 @@ struct WorkoutsHubView: View {
     }
 
     // MARK: - Creation
+
+    // MARK: - This week hero
+
+    private func thisWeekCard(_ plan: WorkoutPlan) -> some View {
+        let all = plan.days.flatMap { $0.exercises }
+        let totalSets = all.reduce(0) { $0 + $1.sets + $1.warmupSets }
+        let totalSecs = all.reduce(0) { $0 + $1.estimatedSeconds }
+        let avgMin = plan.days.isEmpty ? 0 : Int((Double(totalSecs) / Double(plan.days.count) / 60).rounded())
+        return Button {
+            Haptics.tap()
+            selectedPlan = plan
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("THIS WEEK")
+                        .font(.system(size: 10, weight: .heavy)).tracking(2)
+                        .foregroundStyle(Theme.accentGlow)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Text(plan.title)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 0) {
+                    heroStat("\(plan.days.count)", "DAYS")
+                    heroDivider
+                    heroStat("\(all.count)", "EXERCISES")
+                    heroDivider
+                    heroStat("\(totalSets)", "SETS")
+                    heroDivider
+                    heroStat("~\(avgMin)m", "PER DAY")
+                }
+                weekDots(plan)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18)
+                    .fill(LinearGradient(colors: [
+                        Theme.accentGlow.opacity(0.18),
+                        Theme.accentGlow.opacity(0.04)
+                    ], startPoint: .topLeading, endPoint: .bottomTrailing))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .strokeBorder(Theme.accentGlow.opacity(0.35), lineWidth: 0.7)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func heroStat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 18, weight: .heavy, design: .rounded))
+                .foregroundStyle(Theme.textPrimary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(.system(size: 9, weight: .heavy)).tracking(1.2)
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+    private var heroDivider: some View {
+        Rectangle().fill(Theme.lineStrong.opacity(0.6)).frame(width: 0.5, height: 28)
+    }
+
+    private func weekDots(_ plan: WorkoutPlan) -> some View {
+        let days = plan.sortedDays
+        return HStack(spacing: 6) {
+            ForEach(0..<7, id: \.self) { i in
+                let isTraining = i < days.count
+                Capsule()
+                    .fill(isTraining ? Theme.accentGlow : Theme.line)
+                    .frame(height: 4)
+            }
+        }
+    }
 
     private var creationCards: some View {
         HStack(spacing: 12) {

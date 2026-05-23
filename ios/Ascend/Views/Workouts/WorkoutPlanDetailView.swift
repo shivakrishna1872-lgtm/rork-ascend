@@ -110,28 +110,69 @@ struct WorkoutPlanDetailView: View {
     // MARK: - Header
 
     private var headerCard: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(plan.goalRaw.uppercased())
-                    .font(.system(size: 10, weight: .heavy)).tracking(2)
-                    .foregroundStyle(Theme.accentGlow)
-                Text("\(plan.days.count) days · \(plan.source.label)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.textSecondary)
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(plan.goalRaw.uppercased())
+                        .font(.system(size: 10, weight: .heavy)).tracking(2)
+                        .foregroundStyle(Theme.accentGlow)
+                    Text("\(plan.days.count) days · \(plan.source.label)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                Image(systemName: plan.source == .scanned ? "doc.text" : "dumbbell.fill")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(plan.source == .scanned ? Theme.gold : Theme.accentGlow)
             }
-            Spacer()
-            Image(systemName: plan.source == .scanned ? "doc.text" : "dumbbell.fill")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(plan.source == .scanned ? Theme.gold : Theme.accentGlow)
+            statStrip
         }
         .padding(14)
         .glassCard(radius: 16)
+    }
+
+    private var statStrip: some View {
+        let totals = weeklyTotals()
+        return HStack(spacing: 0) {
+            statColumn(value: "\(totals.exercises)", label: "EXERCISES")
+            statDivider
+            statColumn(value: "\(totals.sets)", label: "SETS / WEEK")
+            statDivider
+            statColumn(value: "\(totals.minutes)m", label: "AVG SESSION")
+        }
+    }
+
+    private func statColumn(value: String, label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 18, weight: .heavy, design: .rounded))
+                .foregroundStyle(Theme.textPrimary)
+                .monospacedDigit()
+            Text(label)
+                .font(.system(size: 9, weight: .heavy)).tracking(1.4)
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+    private var statDivider: some View {
+        Rectangle().fill(Theme.lineStrong).frame(width: 0.5, height: 28)
+    }
+
+    private func weeklyTotals() -> (exercises: Int, sets: Int, minutes: Int) {
+        let all = plan.days.flatMap { $0.exercises }
+        let exercises = all.count
+        let sets = all.reduce(0) { $0 + $1.sets + $1.warmupSets }
+        let totalSecs = all.reduce(0) { $0 + $1.estimatedSeconds }
+        let avgMin = plan.days.isEmpty ? 0 : Int((Double(totalSecs) / Double(plan.days.count) / 60).rounded())
+        return (exercises, sets, avgMin)
     }
 
     // MARK: - Day card
 
     private func dayCard(_ day: WorkoutDay) -> some View {
         let expanded = expandedDays.contains(day.id)
+        let totalSets = day.exercises.reduce(0) { $0 + $1.sets + $1.warmupSets }
+        let totalMin = max(1, day.exercises.reduce(0) { $0 + $1.estimatedSeconds } / 60)
         return VStack(alignment: .leading, spacing: 0) {
             Button {
                 Haptics.tap()
@@ -140,13 +181,21 @@ struct WorkoutPlanDetailView: View {
                 }
             } label: {
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(day.dayTitle)
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(Theme.textPrimary)
-                        Text(day.focus.uppercased())
-                            .font(.system(size: 10, weight: .heavy)).tracking(1.6)
-                            .foregroundStyle(Theme.textTertiary)
+                        HStack(spacing: 6) {
+                            Text(day.focus.uppercased())
+                                .font(.system(size: 10, weight: .heavy)).tracking(1.6)
+                                .foregroundStyle(Theme.textTertiary)
+                            Text("·")
+                                .font(.system(size: 10, weight: .heavy))
+                                .foregroundStyle(Theme.textTertiary)
+                            Text("\(totalSets) sets · ~\(totalMin)m")
+                                .font(.system(size: 10, weight: .heavy)).tracking(0.8)
+                                .foregroundStyle(Theme.textTertiary)
+                        }
                     }
                     Spacer()
                     Text("\(day.exercises.count)")
@@ -206,6 +255,16 @@ struct WorkoutPlanDetailView: View {
                 HStack(spacing: 6) {
                     setsRepsChip(ex)
                     restChip(ex)
+                    if ex.warmupSets > 0 {
+                        warmupChip(ex)
+                    }
+                    if !ex.tempo.isEmpty {
+                        Text("TEMPO \(ex.tempo)")
+                            .font(.system(size: 9, weight: .heavy)).tracking(0.9)
+                            .foregroundStyle(Theme.gold)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(Capsule().fill(Theme.gold.opacity(0.14)))
+                    }
                     if !ex.muscleGroup.isEmpty {
                         Text(ex.muscleGroup.capitalized)
                             .font(.system(size: 10, weight: .heavy)).tracking(1)
@@ -285,6 +344,17 @@ struct WorkoutPlanDetailView: View {
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(Capsule().fill(Theme.surface.opacity(0.7)))
     }
+    private func warmupChip(_ ex: WorkoutExercise) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "flame.fill").font(.system(size: 9, weight: .bold))
+            Text("\(ex.warmupSets) warmup")
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(Theme.gold)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Capsule().fill(Theme.gold.opacity(0.14)))
+    }
+
     private func formatRest(_ secs: Int) -> String {
         if secs >= 60 && secs % 60 == 0 { return "\(secs/60) min" }
         if secs >= 60 { return "\(secs/60)m \(secs%60)s" }
@@ -380,7 +450,9 @@ struct WorkoutPlanDetailView: View {
                     notes: newEx.notes,
                     muscleGroup: newEx.muscleGroup,
                     equipment: newEx.equipment,
-                    difficulty: newEx.difficulty
+                    difficulty: newEx.difficulty,
+                    warmupSets: newEx.warmupSets,
+                    tempo: newEx.tempo
                 )
                 ex.day = d
                 ctx.insert(ex)

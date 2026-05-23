@@ -15,7 +15,9 @@ struct AscendApp: App {
             Achievement.self,
             FriendGroup.self,
             Friend.self,
-            LiftEntry.self
+            LiftEntry.self,
+            CalibrationProfile.self,
+            FeedbackEvent.self
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {

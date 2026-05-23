@@ -481,8 +481,10 @@ struct PhysiqueScanFlow: View {
             // All numeric scores come from on-device Vision + fixed math. AI cannot
             // modify these values — it is reserved for text-only enrichment below.
             let det = DeterministicScoring.shared.score(anchors: anchors)
-            let symmetry100 = det.symmetry * 100
-            let posture100 = det.posture * 100
+            // Bounded per-user calibration (max ±15% shift, never reshapes the curve).
+            let calibration = CalibrationResolver.resolve(for: user.appleUserId ?? user.email ?? "local", in: ctx)
+            let symmetry100 = calibration.applySymmetry(det.symmetry * 100)
+            let posture100 = calibration.applyPosture(det.posture * 100)
             let composition100 = det.bodyComposition * 100
             // V-taper score: deterministic mapping from shoulder/hip ratio.
             let vTaperRaw = max(0.9, min(1.9, anchors.shoulderWaistRatio))
@@ -513,12 +515,13 @@ struct PhysiqueScanFlow: View {
 
             // OFFLINE-FIRST: save the deterministic result IMMEDIATELY, before any
             // network call. If AI enrichment fails, the scan is already persisted.
+            let vTaperCalibrated = calibration.applyVTaper(vTaper)
             let record = PhysiqueScanRecord(
                 physiqueScore: physiqueScore,
                 symmetryScore: symmetry100,
                 muscularityScore: muscularity,
                 conditioningScore: conditioning,
-                vTaperScore: vTaper,
+                vTaperScore: vTaperCalibrated,
                 bodyFatPercent: anchors.navyBodyFatPercent,
                 bodyFatConfidence: bodyFatConfidence,
                 archetypeRaw: archetypeRaw,
@@ -526,7 +529,10 @@ struct PhysiqueScanFlow: View {
                 insight: deterministicInsight(anchors: anchors, score: physiqueScore, vTaper: vTaper, conditioning: conditioning),
                 frontImageData: nil,
                 sideImageData: nil,
-                backImageData: nil
+                backImageData: nil,
+                engineVersion: EngineRegistry.Physique.current.rawValue,
+                calibrationVersion: calibration.version,
+                inputHash: EngineRegistry.hashPhysiqueAnchors(anchors)
             )
             ctx.insert(record)
             try? ctx.save()

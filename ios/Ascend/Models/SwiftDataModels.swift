@@ -174,6 +174,12 @@ final class PhysiqueScanRecord {
     var frontImageData: Data?
     var sideImageData: Data?
     var backImageData: Data?
+    /// Provenance — which deterministic engine produced these numbers.
+    var engineVersion: String = EngineRegistry.Physique.current.rawValue
+    /// Calibration profile version active at scan time.
+    var calibrationVersion: String = "calibration_v1"
+    /// SHA-256 of the Vision anchors. Same inputs → same hash → reproducible.
+    var inputHash: String = ""
 
     init(
         date: Date = .now,
@@ -189,7 +195,10 @@ final class PhysiqueScanRecord {
         insight: String,
         frontImageData: Data? = nil,
         sideImageData: Data? = nil,
-        backImageData: Data? = nil
+        backImageData: Data? = nil,
+        engineVersion: String = EngineRegistry.Physique.current.rawValue,
+        calibrationVersion: String = "calibration_v1",
+        inputHash: String = ""
     ) {
         self.date = date
         self.physiqueScore = physiqueScore
@@ -205,6 +214,9 @@ final class PhysiqueScanRecord {
         self.frontImageData = frontImageData
         self.sideImageData = sideImageData
         self.backImageData = backImageData
+        self.engineVersion = engineVersion
+        self.calibrationVersion = calibrationVersion
+        self.inputHash = inputHash
     }
 
     var archetype: Archetype { Archetype(rawValue: archetypeRaw) ?? .balanced }
@@ -504,6 +516,9 @@ final class FaceScanRecord {
     var hairstyles: [String]
     var insight: String
     var imageData: Data?
+    var engineVersion: String = EngineRegistry.PSL.current.rawValue
+    var calibrationVersion: String = "calibration_v1"
+    var inputHash: String = ""
 
     init(
         date: Date = .now,
@@ -517,7 +532,10 @@ final class FaceScanRecord {
         recommendations: [String],
         hairstyles: [String],
         insight: String,
-        imageData: Data? = nil
+        imageData: Data? = nil,
+        engineVersion: String = EngineRegistry.PSL.current.rawValue,
+        calibrationVersion: String = "calibration_v1",
+        inputHash: String = ""
     ) {
         self.date = date
         self.overallScore = overallScore
@@ -531,6 +549,9 @@ final class FaceScanRecord {
         self.hairstyles = hairstyles
         self.insight = insight
         self.imageData = imageData
+        self.engineVersion = engineVersion
+        self.calibrationVersion = calibrationVersion
+        self.inputHash = inputHash
     }
 }
 

@@ -11,6 +11,7 @@ struct WorkoutsHubView: View {
 
     @State private var showGenerate: Bool = false
     @State private var showScan: Bool = false
+    @State private var showTemplates: Bool = false
     @State private var selectedPlan: WorkoutPlan?
 
     var body: some View {
@@ -19,7 +20,9 @@ struct WorkoutsHubView: View {
                 AmbientBackground(intensity: 0.6).ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 16) {
+                        RecoveryBadgeView()
                         creationCards
+                        templatesButton
                         if plans.isEmpty {
                             emptyState
                         } else {
@@ -47,6 +50,11 @@ struct WorkoutsHubView: View {
             }
             .sheet(isPresented: $showScan) {
                 ScanPlanView { plan in
+                    selectedPlan = plan
+                }
+            }
+            .sheet(isPresented: $showTemplates) {
+                TemplatesPickerView { plan in
                     selectedPlan = plan
                 }
             }
@@ -79,6 +87,39 @@ struct WorkoutsHubView: View {
                 showScan = true
             }
         }
+    }
+
+    private var templatesButton: some View {
+        Button {
+            Haptics.tap()
+            showTemplates = true
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10).fill(Theme.gold.opacity(0.18))
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.gold)
+                }
+                .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Browse templates")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("PPL · Upper/Lower · 5×5 · Full Body")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface.opacity(0.55)))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
     }
 
     private func creationCard(icon: String, title: String, subtitle: String, tint: Color, action: @escaping () -> Void) -> some View {

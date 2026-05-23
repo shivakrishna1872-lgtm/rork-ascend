@@ -15,6 +15,7 @@ struct WorkoutPlanDetailView: View {
     @State private var activeTimer: TimerState?
     @State private var showRegenerate: Bool = false
     @State private var addingExerciseDay: WorkoutDay?
+    @State private var loggingExercise: WorkoutExercise?
 
     var body: some View {
         ZStack {
@@ -95,6 +96,9 @@ struct WorkoutPlanDetailView: View {
                 plan.updatedAt = .now
                 try? ctx.save()
             }
+        }
+        .sheet(item: $loggingExercise) { ex in
+            LogSetSheet(exercise: ex, planId: plan.id)
         }
         .onAppear {
             if expandedDays.isEmpty, let first = plan.sortedDays.first {
@@ -221,6 +225,11 @@ struct WorkoutPlanDetailView: View {
             Spacer(minLength: 0)
 
             Menu {
+                Button {
+                    loggingExercise = ex
+                } label: {
+                    Label("Log Set", systemImage: "checkmark.circle")
+                }
                 Button {
                     editingExercise = ex
                 } label: {

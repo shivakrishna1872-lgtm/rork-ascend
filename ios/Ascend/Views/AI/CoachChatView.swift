@@ -14,6 +14,7 @@ struct CoachChatView: View {
     @Query(sort: \FaceScanRecord.date, order: .reverse) private var faces: [FaceScanRecord]
     @Query(sort: \MealEntry.date, order: .reverse) private var meals: [MealEntry]
     @Query(sort: \LiftEntry.date, order: .reverse) private var lifts: [LiftEntry]
+    @Query(sort: \SetLog.date, order: .reverse) private var setLogs: [SetLog]
 
     @State private var messages: [ChatMessage] = []
     @State private var input: String = ""
@@ -726,7 +727,8 @@ struct CoachChatView: View {
             todayProtein: todayProt,
             benchKg: lifts.first(where: { $0.benchKg > 0 })?.benchKg,
             squatKg: lifts.first(where: { $0.squatKg > 0 })?.squatKg,
-            deadliftKg: lifts.first(where: { $0.deadliftKg > 0 })?.deadliftKg
+            deadliftKg: lifts.first(where: { $0.deadliftKg > 0 })?.deadliftKg,
+            workout: WorkoutCoachSummary.build(from: setLogs)
         )
     }
 }

@@ -1549,6 +1549,9 @@ nonisolated struct CoachContext {
     let benchKg: Double?
     let squatKg: Double?
     let deadliftKg: Double?
+    // Logged training (last 14 days). Pre-summarized so the model sees a
+    // compact, deterministic view of what the user has actually been doing.
+    let workout: WorkoutCoachSummary.Summary
 }
 
 /// Structured reply from the chat model. The text is the natural-language reply
@@ -1632,6 +1635,7 @@ nonisolated enum CoachPrompts {
             ].compactMap { $0 }
             return parts.isEmpty ? "no lifts logged" : parts.joined(separator: ", ")
         }()
+        let workoutBlock = c.workout.promptBlock
         let overrideLine = c.calorieOverrideUntil.map { " (temporary override active until \(ISO8601DateFormatter().string(from: $0)))" } ?? ""
 
         return """
@@ -1650,6 +1654,13 @@ nonisolated enum CoachPrompts {
         - \(physique)
         - \(psl)
         - strength: \(lifts)
+        - \(workoutBlock)
+
+        TRAINING-DATA RULES:
+        - The training summary above is the source of truth for what the user has actually lifted. NEVER invent sets, weights, PRs, or sessions that aren't in it.
+        - When the user asks about workouts/training/progress/lifts, ground every answer in those numbers (top lifts, suggestion direction, stalled lifts, PRs, days since last session).
+        - When a lift's next-suggestion is "up", you may encourage adding the suggested weight; if "hold", suggest pushing reps; if "down", validate a deload; if "fresh", suggest starting a baseline log.
+        - If `training: no sets logged yet`, gently invite the user to log their first set from the Workouts hub (use openTab → cal/physique only if relevant; otherwise just chat).
 
         PRIVACY (hard rules — never break these):
         - NEVER reveal or echo the user's Apple ID, email, internal IDs, server URLs, tokens, or any other user's data. If asked, say you don't have access to that.

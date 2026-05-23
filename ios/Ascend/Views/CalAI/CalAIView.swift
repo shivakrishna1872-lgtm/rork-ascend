@@ -10,6 +10,7 @@ struct CalAIView: View {
     @Query(sort: \PhysiqueScanRecord.date, order: .reverse) private var scans: [PhysiqueScanRecord]
 
     @State private var showLog = false
+    @State private var editingMeal: MealEntry?
 
     var body: some View {
         ScrollView {
@@ -42,6 +43,11 @@ struct CalAIView: View {
         .tabBarBottomInset()
         .sheet(isPresented: $showLog) {
             MealLogSheet(user: user)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $editingMeal) { meal in
+            MealEditSheet(meal: meal, user: user)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -183,19 +189,31 @@ struct CalAIView: View {
         } else {
             VStack(spacing: 8) {
                 ForEach(todayMeals) { meal in
-                    HStack(spacing: 12) {
-                        thumb(for: meal)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(meal.name).font(.system(size: 15, weight: .semibold))
-                            Text("\(meal.calories) \(user.unitSystem.calorieUnit) · P\(meal.proteinG) C\(meal.carbsG) F\(meal.fatsG)")
-                                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    Button {
+                        Haptics.tap()
+                        editingMeal = meal
+                    } label: {
+                        HStack(spacing: 12) {
+                            thumb(for: meal)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(meal.name).font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Theme.textPrimary)
+                                Text("\(meal.calories) \(user.unitSystem.calorieUnit) · P\(meal.proteinG) C\(meal.carbsG) F\(meal.fatsG)")
+                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text(meal.date.formatted(date: .omitted, time: .shortened))
+                                    .font(.aetherCaption).foregroundStyle(Theme.textTertiary)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
                         }
-                        Spacer()
-                        Text(meal.date.formatted(date: .omitted, time: .shortened))
-                            .font(.aetherCaption).foregroundStyle(Theme.textTertiary)
+                        .padding(12)
+                        .glassCard(radius: 14)
                     }
-                    .padding(12)
-                    .glassCard(radius: 14)
+                    .buttonStyle(.plain)
                     .swipeActions {
                         Button(role: .destructive) {
                             ctx.delete(meal); try? ctx.save()
@@ -212,6 +230,143 @@ struct CalAIView: View {
         RoundedRectangle(cornerRadius: 10).fill(Theme.accent.opacity(0.15))
             .frame(width: 44, height: 44)
             .overlay { Image(systemName: "fork.knife").foregroundStyle(Theme.accentGlow) }
+    }
+}
+
+// MARK: - Meal Edit Sheet
+
+struct MealEditSheet: View {
+    @Bindable var meal: MealEntry
+    let user: UserProfile
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var ctx
+
+    @State private var name: String = ""
+    @State private var calories: String = ""
+    @State private var proteinG: String = ""
+    @State private var carbsG: String = ""
+    @State private var fatsG: String = ""
+    @State private var note: String = ""
+    @State private var showDeleteConfirm = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                Text("Edit Meal".uppercased())
+                    .font(.system(size: 11, weight: .semibold)).tracking(2.5)
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.top, 18)
+
+                field("Name", text: $name, placeholder: "e.g. Chicken bowl")
+
+                HStack(spacing: 10) {
+                    numField("Calories", text: $calories, unit: user.unitSystem.calorieUnit)
+                    numField("Protein", text: $proteinG, unit: "g")
+                }
+                HStack(spacing: 10) {
+                    numField("Carbs", text: $carbsG, unit: "g")
+                    numField("Fats", text: $fatsG, unit: "g")
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Notes".uppercased())
+                        .font(.system(size: 10, weight: .semibold)).tracking(1.5)
+                        .foregroundStyle(Theme.textTertiary)
+                    TextField("Optional", text: $note, axis: .vertical)
+                        .lineLimit(2...4)
+                        .font(.system(size: 15, weight: .medium))
+                        .padding(14)
+                        .glassCard(radius: 14)
+                }
+
+                PrimaryButton(title: "Save Changes", icon: "checkmark") {
+                    save()
+                }
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity(name.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
+
+                Button(role: .destructive) {
+                    Haptics.tap()
+                    showDeleteConfirm = true
+                } label: {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("Delete Meal")
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.bad)
+                    .frame(maxWidth: .infinity).frame(height: 46)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Theme.bad.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.bad.opacity(0.4), lineWidth: 0.6))
+                }
+                .buttonStyle(.plain)
+
+                Color.clear.frame(height: 30)
+            }
+            .padding(.horizontal, 20)
+        }
+        .scrollIndicators(.hidden)
+        .background(Theme.bg)
+        .onAppear {
+            name = meal.name
+            calories = String(meal.calories)
+            proteinG = String(meal.proteinG)
+            carbsG = String(meal.carbsG)
+            fatsG = String(meal.fatsG)
+            note = meal.note
+        }
+        .confirmationDialog("Delete this meal?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                ctx.delete(meal)
+                try? ctx.save()
+                Haptics.success()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold)).tracking(1.5)
+                .foregroundStyle(Theme.textTertiary)
+            TextField(placeholder, text: text)
+                .font(.system(size: 16, weight: .medium))
+                .padding(14)
+                .glassCard(radius: 14)
+        }
+    }
+
+    private func numField(_ label: String, text: Binding<String>, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .semibold)).tracking(1.5)
+                .foregroundStyle(Theme.textTertiary)
+            HStack(spacing: 4) {
+                TextField("0", text: text)
+                    .keyboardType(.numberPad)
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Text(unit)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(14)
+            .glassCard(radius: 14)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func save() {
+        meal.name = name.trimmingCharacters(in: .whitespaces)
+        meal.calories = max(0, Int(calories) ?? 0)
+        meal.proteinG = max(0, Int(proteinG) ?? 0)
+        meal.carbsG = max(0, Int(carbsG) ?? 0)
+        meal.fatsG = max(0, Int(fatsG) ?? 0)
+        meal.note = note
+        try? ctx.save()
+        Haptics.success()
+        dismiss()
     }
 }
 

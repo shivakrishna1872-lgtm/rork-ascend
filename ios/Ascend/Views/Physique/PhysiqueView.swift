@@ -38,19 +38,6 @@ struct PhysiqueView: View {
                 } else {
                     emptyCard.blurFadeIn(delay: 0.1)
                 }
-
-                SectionHeader(title: "Timeline", trailing: scans.count > 0 ? "\(scans.count) scans" : nil)
-                    .padding(.horizontal, 4)
-
-                if scans.count <= 1 {
-                    Text("Your evolution will appear here.")
-                        .font(.aetherBody).foregroundStyle(Theme.textTertiary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 30)
-                        .glassCard(radius: 18)
-                } else {
-                    timeline.blurFadeIn(delay: 0.16)
-                }
-
             }
             .padding(.horizontal, 20).padding(.top, 12)
         }

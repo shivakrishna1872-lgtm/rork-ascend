@@ -6,6 +6,7 @@ import SwiftData
 struct LogSetSheet: View {
     let exercise: WorkoutExercise
     let planId: UUID?
+    let onLogged: ((Int) -> Void)?
     @Environment(\.modelContext) private var ctx
     @Environment(\.dismiss) private var dismiss
     @Query private var history: [SetLog]
@@ -15,9 +16,10 @@ struct LogSetSheet: View {
     @State private var suggestion: ProgressiveOverload.Suggestion?
     @State private var todaySets: [SetLog] = []
 
-    init(exercise: WorkoutExercise, planId: UUID?) {
+    init(exercise: WorkoutExercise, planId: UUID?, onLogged: ((Int) -> Void)? = nil) {
         self.exercise = exercise
         self.planId = planId
+        self.onLogged = onLogged
         let name = exercise.name
         let predicate = #Predicate<SetLog> { $0.exerciseName == name }
         _history = Query(filter: predicate, sort: [SortDescriptor(\.date, order: .reverse)])
@@ -248,6 +250,10 @@ struct LogSetSheet: View {
         reps = ""
         recomputeToday()
         computeSuggestion()
+        // Notify caller so the rest timer can auto-start.
+        let rest = exercise.restSeconds > 0 ? exercise.restSeconds : 75
+        onLogged?(rest)
+        dismiss()
     }
 
     private func recomputeToday() {

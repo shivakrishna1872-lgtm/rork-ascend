@@ -16,6 +16,7 @@ struct WorkoutPlanDetailView: View {
     @State private var showRegenerate: Bool = false
     @State private var addingExerciseDay: WorkoutDay?
     @State private var loggingExercise: WorkoutExercise?
+    @State private var timerExpanded: Bool = false
 
     var body: some View {
         ZStack {
@@ -36,9 +37,14 @@ struct WorkoutPlanDetailView: View {
             if let timer = activeTimer {
                 VStack {
                     Spacer()
-                    RestTimerBar(state: timer) {
-                        activeTimer = nil
-                    }
+                    RestTimerBar(
+                        state: timer,
+                        onExpand: {
+                            Haptics.tap()
+                            timerExpanded = true
+                        },
+                        onClose: { activeTimer = nil }
+                    )
                     .padding(.horizontal, 14)
                     .padding(.bottom, 14)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -98,7 +104,30 @@ struct WorkoutPlanDetailView: View {
             }
         }
         .sheet(item: $loggingExercise) { ex in
-            LogSetSheet(exercise: ex, planId: plan.id)
+            LogSetSheet(exercise: ex, planId: plan.id) { restSeconds in
+                // Auto-start the rest timer after logging a set.
+                let secs = restSeconds > 0 ? restSeconds : (ex.restSeconds > 0 ? ex.restSeconds : 75)
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                    activeTimer = TimerState(exerciseName: ex.name, seconds: secs)
+                    timerExpanded = true
+                }
+            }
+        }
+        .sheet(isPresented: $timerExpanded) {
+            if let timer = activeTimer {
+                RestTimerFullView(
+                    state: timer,
+                    onSkip: {
+                        timer.cancel()
+                        timerExpanded = false
+                        activeTimer = nil
+                    },
+                    onDismiss: { timerExpanded = false }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.ultraThinMaterial)
+            }
         }
         .onAppear {
             if expandedDays.isEmpty, let first = plan.sortedDays.first {
@@ -230,91 +259,86 @@ struct WorkoutPlanDetailView: View {
     }
 
     private func exerciseRow(_ ex: WorkoutExercise) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Button {
-                Haptics.medium()
-                let secs = ex.restSeconds > 0 ? ex.restSeconds : 75
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                    activeTimer = TimerState(exerciseName: ex.name, seconds: secs)
-                }
-            } label: {
-                ZStack {
-                    Circle().fill(Theme.accentGlow.opacity(0.16))
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.accentGlow)
-                }
-                .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(ex.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                HStack(spacing: 6) {
-                    setsRepsChip(ex)
-                    restChip(ex)
-                    if ex.warmupSets > 0 {
-                        warmupChip(ex)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ex.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    ChipsFlow(spacing: 6, lineSpacing: 6) {
+                        setsRepsChip(ex)
+                        restChip(ex)
+                        if ex.warmupSets > 0 { warmupChip(ex) }
+                        if !ex.tempo.isEmpty { tempoChip(ex) }
+                        if !ex.muscleGroup.isEmpty { muscleChip(ex) }
                     }
-                    if !ex.tempo.isEmpty {
-                        Text("TEMPO \(ex.tempo)")
-                            .font(.system(size: 9, weight: .heavy)).tracking(0.9)
-                            .foregroundStyle(Theme.gold)
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Capsule().fill(Theme.gold.opacity(0.14)))
-                    }
-                    if !ex.muscleGroup.isEmpty {
-                        Text(ex.muscleGroup.capitalized)
-                            .font(.system(size: 10, weight: .heavy)).tracking(1)
-                            .foregroundStyle(Theme.textTertiary)
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Capsule().fill(Theme.surface.opacity(0.6)))
+                    if !ex.notes.isEmpty {
+                        Text(ex.notes)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
                     }
                 }
-                if !ex.notes.isEmpty {
-                    Text(ex.notes)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
+                Spacer(minLength: 0)
+                Menu {
+                    Button { editingExercise = ex } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    Button { moveExercise(ex, by: -1) } label: {
+                        Label("Move Up", systemImage: "arrow.up")
+                    }
+                    Button { moveExercise(ex, by: 1) } label: {
+                        Label("Move Down", systemImage: "arrow.down")
+                    }
+                    Button(role: .destructive) { deleteExercise(ex) } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
             }
-            Spacer(minLength: 0)
-
-            Menu {
+            HStack(spacing: 8) {
                 Button {
+                    Haptics.success()
                     loggingExercise = ex
                 } label: {
-                    Label("Log Set", systemImage: "checkmark.circle")
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .bold))
+                        Text("Log Set")
+                            .font(.system(size: 13, weight: .heavy))
+                    }
+                    .foregroundStyle(Theme.bg)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Theme.accentGlow))
                 }
+                .buttonStyle(.plain)
+
                 Button {
-                    editingExercise = ex
+                    Haptics.medium()
+                    let secs = ex.restSeconds > 0 ? ex.restSeconds : 75
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                        activeTimer = TimerState(exerciseName: ex.name, seconds: secs)
+                    }
                 } label: {
-                    Label("Edit", systemImage: "pencil")
+                    HStack(spacing: 6) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 13, weight: .bold))
+                        Text("Rest")
+                            .font(.system(size: 13, weight: .heavy))
+                    }
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(width: 96, height: 36)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface.opacity(0.7)))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
                 }
-                Button {
-                    moveExercise(ex, by: -1)
-                } label: {
-                    Label("Move Up", systemImage: "arrow.up")
-                }
-                Button {
-                    moveExercise(ex, by: 1)
-                } label: {
-                    Label("Move Down", systemImage: "arrow.down")
-                }
-                Button(role: .destructive) {
-                    deleteExercise(ex)
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Theme.textTertiary)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
         }
         .padding(12)
@@ -324,6 +348,21 @@ struct WorkoutPlanDetailView: View {
         .onTapGesture(count: 2) {
             editingExercise = ex
         }
+    }
+
+    private func tempoChip(_ ex: WorkoutExercise) -> some View {
+        Text("TEMPO \(ex.tempo)")
+            .font(.system(size: 9, weight: .heavy)).tracking(0.9)
+            .foregroundStyle(Theme.gold)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(Theme.gold.opacity(0.14)))
+    }
+    private func muscleChip(_ ex: WorkoutExercise) -> some View {
+        Text(ex.muscleGroup.capitalized)
+            .font(.system(size: 10, weight: .heavy)).tracking(1)
+            .foregroundStyle(Theme.textTertiary)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Capsule().fill(Theme.surface.opacity(0.6)))
     }
 
     private func setsRepsChip(_ ex: WorkoutExercise) -> some View {
@@ -347,10 +386,12 @@ struct WorkoutPlanDetailView: View {
     private func warmupChip(_ ex: WorkoutExercise) -> some View {
         HStack(spacing: 3) {
             Image(systemName: "flame.fill").font(.system(size: 9, weight: .bold))
-            Text("\(ex.warmupSets) warmup")
+            Text("\(ex.warmupSets) WU")
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(Theme.gold)
+        .lineLimit(1)
+        .fixedSize()
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(Capsule().fill(Theme.gold.opacity(0.14)))
     }
@@ -511,62 +552,237 @@ final class TimerState: Identifiable {
 
 private struct RestTimerBar: View {
     @Bindable var state: TimerState
+    let onExpand: () -> Void
     let onClose: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle().strokeBorder(Theme.line, lineWidth: 3)
-                Circle()
-                    .trim(from: 0, to: state.progress)
-                    .stroke(Theme.accentGlow, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 0.5), value: state.progress)
-                Text("\(state.remaining)")
-                    .font(.system(size: 14, weight: .heavy, design: .rounded))
-                    .foregroundStyle(Theme.textPrimary)
-                    .monospacedDigit()
-            }
-            .frame(width: 44, height: 44)
+        Button(action: onExpand) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().strokeBorder(Theme.line, lineWidth: 3)
+                    Circle()
+                        .trim(from: 0, to: state.progress)
+                        .stroke(Theme.accentGlow, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.5), value: state.progress)
+                    Text("\(state.remaining)")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.textPrimary)
+                        .monospacedDigit()
+                }
+                .frame(width: 44, height: 44)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("REST")
-                    .font(.system(size: 9, weight: .heavy)).tracking(1.6)
-                    .foregroundStyle(Theme.textTertiary)
-                Text(state.exerciseName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("REST · TAP TO EXPAND")
+                        .font(.system(size: 9, weight: .heavy)).tracking(1.6)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(state.exerciseName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button {
+                    Haptics.tap()
+                    state.add(15)
+                } label: {
+                    Text("+15s")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(Theme.textPrimary)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Capsule().fill(Theme.surface.opacity(0.7)))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    Haptics.tap()
+                    state.cancel()
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Theme.surface.opacity(0.7)))
+                }
+                .buttonStyle(.plain)
             }
-            Spacer(minLength: 4)
-            Button {
-                Haptics.tap()
-                state.add(15)
-            } label: {
-                Text("+15s")
-                    .font(.system(size: 12, weight: .heavy))
-                    .foregroundStyle(Theme.textPrimary)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(Capsule().fill(Theme.surface.opacity(0.7)))
-            }
-            .buttonStyle(.plain)
-            Button {
-                Haptics.tap()
-                state.cancel()
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Theme.surface.opacity(0.7)))
-            }
-            .buttonStyle(.plain)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+            .softShadow()
+            .contentShape(RoundedRectangle(cornerRadius: 16))
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
-        .softShadow()
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Full rest timer
+
+struct RestTimerFullView: View {
+    @Bindable var state: TimerState
+    let onSkip: () -> Void
+    let onDismiss: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            AmbientBackground(intensity: 0.55).ignoresSafeArea()
+            VStack(spacing: 28) {
+                Text("REST")
+                    .font(.system(size: 11, weight: .heavy)).tracking(3)
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.top, 18)
+                Text(state.exerciseName)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                ZStack {
+                    Circle().strokeBorder(Theme.line, lineWidth: 10)
+                    Circle()
+                        .trim(from: 0, to: state.progress)
+                        .stroke(Theme.accentGlow, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.5), value: state.progress)
+                    VStack(spacing: 4) {
+                        Text(formatTime(state.remaining))
+                            .font(.system(size: 64, weight: .heavy, design: .rounded))
+                            .foregroundStyle(Theme.textPrimary)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        Text("of \(formatTime(state.total))")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.textTertiary)
+                            .monospacedDigit()
+                    }
+                }
+                .frame(width: 260, height: 260)
+                .padding(.vertical, 8)
+
+                HStack(spacing: 12) {
+                    timerButton("-15s", systemImage: "minus") {
+                        Haptics.tap(); state.add(-15)
+                    }
+                    timerButton("+15s", systemImage: "plus") {
+                        Haptics.tap(); state.add(15)
+                    }
+                    timerButton("+30s", systemImage: "plus.forwardslash.minus") {
+                        Haptics.tap(); state.add(30)
+                    }
+                }
+                .padding(.horizontal, 24)
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: 12) {
+                    Button {
+                        Haptics.warning()
+                        onSkip()
+                        dismiss()
+                    } label: {
+                        Text("Skip Rest")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(Theme.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface.opacity(0.7)))
+                            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        Haptics.tap()
+                        onDismiss()
+                        dismiss()
+                    } label: {
+                        Text("Minimize")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(Theme.bg)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.accentGlow))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+            }
+        }
+        .onChange(of: state.remaining) { _, newValue in
+            if newValue == 0 {
+                // Auto-dismiss when timer completes.
+                Haptics.success()
+            }
+        }
+    }
+
+    private func timerButton(_ label: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .bold))
+                Text(label)
+                    .font(.system(size: 13, weight: .heavy))
+            }
+            .foregroundStyle(Theme.textPrimary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.surface.opacity(0.6)))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.lineStrong, lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func formatTime(_ secs: Int) -> String {
+        let m = secs / 60
+        let s = secs % 60
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Chips wrap layout
+
+struct ChipsFlow: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+        for sub in subviews {
+            let s = sub.sizeThatFits(.unspecified)
+            if x + s.width > maxWidth && x > 0 {
+                y += lineHeight + lineSpacing
+                x = 0
+                lineHeight = 0
+            }
+            x += s.width + spacing
+            lineHeight = max(lineHeight, s.height)
+            totalWidth = max(totalWidth, x - spacing)
+        }
+        return CGSize(width: totalWidth, height: y + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var lineHeight: CGFloat = 0
+        for sub in subviews {
+            let s = sub.sizeThatFits(.unspecified)
+            if x - bounds.minX + s.width > maxWidth && x > bounds.minX {
+                y += lineHeight + lineSpacing
+                x = bounds.minX
+                lineHeight = 0
+            }
+            sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            lineHeight = max(lineHeight, s.height)
+        }
     }
 }
 

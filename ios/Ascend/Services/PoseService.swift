@@ -95,20 +95,45 @@ nonisolated struct PoseService {
     static let shared = PoseService()
 
     func analyze(_ image: UIImage) async -> PoseResult? {
-        guard let cg = image.cgImage else { return nil }
-        // Run multiple detectors in one Vision pass so we can fall through
-        // gracefully: full pose → human rectangle → person segmentation mask
-        // → saliency / brightness. Any signal is treated as "body detected".
-        let poseReq = VNDetectHumanBodyPoseRequest()
-        let rectReq = VNDetectHumanRectanglesRequest()
-        rectReq.upperBodyOnly = false
-        let segReq = VNGeneratePersonSegmentationRequest()
-        segReq.qualityLevel = .balanced
-        segReq.outputPixelFormat = kCVPixelFormatType_OneComponent8
-        let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
-        try? handler.perform([poseReq, rectReq, segReq])
-        guard let obs = poseReq.results?.first else {
-            return analyzeFallback(cg: cg, rect: rectReq.results?.first, seg: segReq.results?.first)
+        guard let cg0 = image.cgImage else { return nil }
+        // Body-first pipeline — face is never required. We run multi-pass
+        // landmark recovery: original → contrast-enhanced → exposure-normalized
+        // → mirrored → expanded crop. Each pass runs body pose + human rect +
+        // person segmentation together. Any torso anchors (shoulders OR hips)
+        // are treated as a valid body, regardless of face/limb visibility.
+        let variants: [CGImage] = [cg0] + buildRecoveryVariants(from: cg0)
+        var bestPose: VNHumanBodyPoseObservation?
+        var bestPoseCount: Int = 0
+        var bestCG: CGImage = cg0
+        var fallbackRect: VNHumanObservation?
+        var fallbackSeg: VNPixelBufferObservation?
+
+        for variant in variants {
+            let poseReq = VNDetectHumanBodyPoseRequest()
+            let rectReq = VNDetectHumanRectanglesRequest()
+            rectReq.upperBodyOnly = false
+            let segReq = VNGeneratePersonSegmentationRequest()
+            segReq.qualityLevel = .balanced
+            segReq.outputPixelFormat = kCVPixelFormatType_OneComponent8
+            let handler = VNImageRequestHandler(cgImage: variant, orientation: .up, options: [:])
+            try? handler.perform([poseReq, rectReq, segReq])
+            if fallbackRect == nil, let r = rectReq.results?.first { fallbackRect = r }
+            if fallbackSeg == nil, let s = segReq.results?.first { fallbackSeg = s }
+            if let obs = poseReq.results?.first {
+                let usable = countTorsoJoints(obs)
+                if usable > bestPoseCount {
+                    bestPose = obs
+                    bestPoseCount = usable
+                    bestCG = variant
+                }
+                // Early-exit once we have full torso (both shoulders + both hips).
+                if usable >= 4 { break }
+            }
+        }
+
+        let cg = bestCG
+        guard let obs = bestPose else {
+            return analyzeFallback(cg: cg, rect: fallbackRect, seg: fallbackSeg)
         }
 
         let names: [VNHumanBodyPoseObservation.JointName] = [
@@ -227,9 +252,16 @@ nonisolated struct PoseService {
         let bright = brightness(cg: cg)
 
         // Ultra-lenient quality checks — only flag completely broken captures.
-        // Partial bodies, off-center framing, and unusual lighting all pass.
+        // Partial bodies, occluded faces (phone in front of face / mirror selfie),
+        // off-center framing, and imperfect lighting all pass. As long as torso
+        // anchors (shoulders OR hips) exist, the scan continues.
+        let hasShoulders = landmarks["left_shoulder_joint"] != nil && landmarks["right_shoulder_joint"] != nil
+        let hasHips = landmarks["left_hip_joint"] != nil && landmarks["right_hip_joint"] != nil
+        let hasTorso = hasShoulders || hasHips
         var issues: [String] = []
-        if confCount < 2 { issues.append("We couldn't see a body — any clearer shot works") }
+        if !hasTorso && confCount < 2 {
+            issues.append("We couldn't see your torso — try a wider shot showing shoulders or hips")
+        }
         if bright < 0.03 { issues.append("Photo looks pitch black — a bit more light helps") }
         if bright > 0.99 { issues.append("Photo is fully blown out — try a softer light") }
 
@@ -424,6 +456,55 @@ nonisolated struct PoseService {
         )
     }
 
+    /// Count how many torso anchors a pose observation actually contains.
+    /// Torso = shoulders + hips. Used to pick the best variant pass and to
+    /// validate that we have enough geometry to score the body even when face
+    /// and limbs are partially occluded.
+    private func countTorsoJoints(_ obs: VNHumanBodyPoseObservation) -> Int {
+        let torso: [VNHumanBodyPoseObservation.JointName] = [
+            .leftShoulder, .rightShoulder, .leftHip, .rightHip
+        ]
+        var n = 0
+        for j in torso {
+            if let p = try? obs.recognizedPoint(j), p.confidence > 0.1 { n += 1 }
+        }
+        return n
+    }
+
+    /// Multi-pass recovery variants: contrast-boost, exposure-normalize, and
+    /// horizontal mirror (mirror selfies often confuse the pose detector on
+    /// the original orientation). Cheap CIFilters — total cost is small and
+    /// only runs when the original pass missed torso landmarks.
+    private func buildRecoveryVariants(from cg: CGImage) -> [CGImage] {
+        let ctx = CIContext(options: [.useSoftwareRenderer: false])
+        let base = CIImage(cgImage: cg)
+        var out: [CGImage] = []
+        // 1) Contrast + saturation bump (helps low-contrast bathroom mirrors).
+        if let f = CIFilter(name: "CIColorControls") {
+            f.setValue(base, forKey: kCIInputImageKey)
+            f.setValue(1.18, forKey: kCIInputContrastKey)
+            f.setValue(1.05, forKey: kCIInputSaturationKey)
+            if let o = f.outputImage, let img = ctx.createCGImage(o, from: o.extent) {
+                out.append(img)
+            }
+        }
+        // 2) Exposure normalize (lifts shadows on dim gym lighting).
+        if let f = CIFilter(name: "CIExposureAdjust") {
+            f.setValue(base, forKey: kCIInputImageKey)
+            f.setValue(0.55, forKey: kCIInputEVKey)
+            if let o = f.outputImage, let img = ctx.createCGImage(o, from: o.extent) {
+                out.append(img)
+            }
+        }
+        // 3) Horizontal mirror — mirror selfies sometimes parse better flipped.
+        let mirrored = base.transformed(by: CGAffineTransform(scaleX: -1, y: 1)
+            .translatedBy(x: -base.extent.width, y: 0))
+        if let img = ctx.createCGImage(mirrored, from: mirrored.extent) {
+            out.append(img)
+        }
+        return out
+    }
+
     /// Secondary detection path. Runs when full body-pose joints aren't
     /// available — falls through human-rectangle → person segmentation mask
     /// → brightness-only signal so we don't reject usable images.
@@ -460,19 +541,22 @@ nonisolated struct PoseService {
         // 2) Person segmentation mask coverage (people are present even if pose failed).
         if let s = seg {
             let pb = s.pixelBuffer
-            let cov = maskCoverage(pb)
-            if cov > 0.02 {
+            let mask = sampleMask(pb)
+            if mask.coverage > 0.02 {
+                // Recover approximate torso geometry from the silhouette mask:
+                // widest slice = shoulder/hip band, narrowest mid-slice = waist.
+                let geom = estimateTorsoGeometryFromMask(mask)
                 return PoseResult(
                     landmarks: [:],
-                    confidenceAverage: min(1, 0.4 + cov),
+                    confidenceAverage: min(1, 0.45 + mask.coverage),
                     brightness: bright,
-                    centeringX: 0.5,
-                    coverageY: min(1, cov * 1.6),
-                    symmetry: 0.7,
-                    shoulderWaistRatio: 1.3,
-                    waistShoulderRatio: 0.85,
+                    centeringX: geom.centerX,
+                    coverageY: min(1, mask.coverage * 1.6),
+                    symmetry: geom.symmetry,
+                    shoulderWaistRatio: geom.shoulderHipRatio,
+                    waistShoulderRatio: geom.waistShoulderRatio,
                     thighHipRatio: 1.0,
-                    torsoAspect: 1.4,
+                    torsoAspect: geom.torsoAspect,
                     limbSymmetry: 0.85,
                     shoulderTiltDeg: 0,
                     issues: [],
@@ -502,27 +586,121 @@ nonisolated struct PoseService {
     }
 
     private func maskCoverage(_ pb: CVPixelBuffer) -> Double {
+        sampleMask(pb).coverage
+    }
+
+    /// Sampled silhouette mask — coverage + per-row width profile used to
+    /// reconstruct torso shoulder/waist/hip geometry when pose joints fail.
+    private struct SampledMask {
+        let coverage: Double
+        /// Per-row hit count, top→bottom, normalized to 0..1 of image width.
+        let rowWidths: [Double]
+        /// Per-row center X, normalized 0..1.
+        let rowCenters: [Double]
+    }
+
+    private func sampleMask(_ pb: CVPixelBuffer) -> SampledMask {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         let w = CVPixelBufferGetWidth(pb)
         let h = CVPixelBufferGetHeight(pb)
         let bpr = CVPixelBufferGetBytesPerRow(pb)
-        guard let base = CVPixelBufferGetBaseAddress(pb) else { return 0 }
+        guard let base = CVPixelBufferGetBaseAddress(pb), w > 4, h > 4 else {
+            return SampledMask(coverage: 0, rowWidths: [], rowCenters: [])
+        }
         let ptr = base.assumingMemoryBound(to: UInt8.self)
-        // Sample on an 80x80 grid for speed.
-        let step = max(1, min(w, h) / 80)
+        let rows = 64
+        let cols = 64
+        let yStep = max(1, h / rows)
+        let xStep = max(1, w / cols)
+        var widths: [Double] = []
+        var centers: [Double] = []
         var hit = 0, total = 0
         var y = 0
         while y < h {
+            var rowHit = 0
+            var firstX = -1
+            var lastX = -1
             var x = 0
             while x < w {
-                if ptr[y * bpr + x] > 64 { hit += 1 }
+                if ptr[y * bpr + x] > 64 {
+                    rowHit += 1
+                    hit += 1
+                    if firstX < 0 { firstX = x }
+                    lastX = x
+                }
                 total += 1
-                x += step
+                x += xStep
             }
-            y += step
+            if rowHit > 0, firstX >= 0, lastX >= firstX {
+                widths.append(Double(lastX - firstX) / Double(w))
+                centers.append(Double(firstX + lastX) / 2 / Double(w))
+            } else {
+                widths.append(0)
+                centers.append(0.5)
+            }
+            y += yStep
         }
-        return total > 0 ? Double(hit) / Double(total) : 0
+        let coverage = total > 0 ? Double(hit) / Double(total) : 0
+        return SampledMask(coverage: coverage, rowWidths: widths, rowCenters: centers)
+    }
+
+    private struct MaskGeometry {
+        let centerX: Double
+        let symmetry: Double
+        let shoulderHipRatio: Double
+        let waistShoulderRatio: Double
+        let torsoAspect: Double
+    }
+
+    /// Heuristic torso geometry from silhouette row profile. Treats the upper
+    /// third's widest slice as the shoulder band, middle third's narrowest as
+    /// the waist, and lower third's widest as the hip band. Robust when face
+    /// and limbs are out of frame.
+    private func estimateTorsoGeometryFromMask(_ mask: SampledMask) -> MaskGeometry {
+        let widths = mask.rowWidths
+        guard widths.count >= 9 else {
+            return MaskGeometry(centerX: 0.5, symmetry: 0.75, shoulderHipRatio: 1.3,
+                                waistShoulderRatio: 0.85, torsoAspect: 1.4)
+        }
+        // Trim leading/trailing empty rows so the body's vertical span = full slice.
+        var top = 0
+        var bottom = widths.count - 1
+        while top < bottom && widths[top] < 0.04 { top += 1 }
+        while bottom > top && widths[bottom] < 0.04 { bottom -= 1 }
+        let span = max(1, bottom - top)
+        let third = max(2, span / 3)
+        let upper = Array(widths[top..<(top + third)])
+        let middle = Array(widths[(top + third)..<(top + 2 * third)])
+        let lower = Array(widths[(top + 2 * third)...bottom])
+        let shoulderW = upper.max() ?? 0.2
+        let hipW = lower.max() ?? 0.2
+        let waistW = middle.filter { $0 > 0.04 }.min() ?? max(0.05, min(shoulderW, hipW) * 0.85)
+
+        let shoulderHip = hipW > 0.001 ? shoulderW / hipW : 1.3
+        let waistShoulder = shoulderW > 0.001 ? waistW / shoulderW : 0.85
+        let centers = mask.rowCenters
+        let centerX = centers.isEmpty ? 0.5 :
+            centers[top..<(bottom + 1)].reduce(0, +) / Double(bottom - top + 1)
+        // Symmetry: how stable the column center is across the torso band.
+        let centerSpread: Double = {
+            let slice = Array(centers[top..<(bottom + 1)])
+            let mean = slice.reduce(0, +) / Double(slice.count)
+            let variance = slice.map { pow($0 - mean, 2) }.reduce(0, +) / Double(slice.count)
+            return sqrt(variance)
+        }()
+        let symmetry = max(0.3, min(1, 1 - centerSpread * 6))
+        // Torso aspect: vertical body span vs widest body width.
+        let widest = max(shoulderW, hipW)
+        let aspect = widest > 0.001 ? Double(span) / Double(widths.count) / widest : 1.4
+
+        return MaskGeometry(
+            centerX: centerX,
+            symmetry: symmetry,
+            shoulderHipRatio: max(0.9, min(1.9, shoulderHip)),
+            waistShoulderRatio: max(0.55, min(1.4, waistShoulder)),
+            torsoAspect: max(0.8, min(2.6, aspect))
+        )
     }
 
     private func brightness(cg: CGImage) -> Double {

@@ -219,8 +219,10 @@ nonisolated struct AIService {
 
     private var baseURL: String { Config.EXPO_PUBLIC_TOOLKIT_URL }
     private var key: String { Config.EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY }
+    // Vision chain — see AIOrchestrator.visionChain. One vision model per request.
+    // Reasoning chain — see AIOrchestrator.reasoningChain. Opus-first.
     private let model = "google/gemini-2.5-flash"
-    private let fallbackModels = ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5", "google/gemini-2.0-flash", "openai/gpt-4o"]
+    private let fallbackModels = ["openai/gpt-4o", "google/gemini-2.0-flash", "openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"]
     // Max wall-clock budget per AI call (seconds). We'd rather wait a bit longer
     // than fall back to an offline heuristic — users have asked for real-time AI.
     private let totalBudget: TimeInterval = 90
@@ -699,8 +701,17 @@ nonisolated struct AIService {
 
     // MARK: - HTTP
 
-    private func callJSONText<T: Decodable>(prompt: String, as: T.Type) async throws -> T {
+    private func callJSONText<T: Decodable & Sendable>(prompt: String, as: T.Type) async throws -> T {
         guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
+        // Dedup identical concurrent text calls (e.g. two views asking for the
+        // same daily insight at the same time).
+        let dedupKey = "text|" + AIResponseCache.hash(["p", String(prompt.hashValue)])
+        return try await RequestQueue.shared.run(key: dedupKey) { [self] in
+            try await callJSONTextInner(prompt: prompt, as: T.self)
+        }
+    }
+
+    private func callJSONTextInner<T: Decodable & Sendable>(prompt: String, as: T.Type) async throws -> T {
         let body: [String: Any] = [
             "model": model,
             "temperature": 0.2,
@@ -711,7 +722,16 @@ nonisolated struct AIService {
         ]
         // Try primary model, then fallbacks. 3 attempts per model with progressive backoff.
         // Goal: prefer real AI over offline heuristic. Only give up after exhausting the chain.
-        let modelChain = [model] + fallbackModels
+        // For reasoning-class prompts (coach insights, daily insight), prefer the
+        // Opus-first reasoning chain when none of the vision providers are
+        // healthy — descends Opus → GPT-5 → Gemini Pro → Sonnet → 4o → Haiku.
+        let primaryChain = [model] + fallbackModels
+        let fullChain = primaryChain + AIOrchestrator.reasoningChain.filter { !primaryChain.contains($0) }
+        var modelChain: [String] = []
+        for m in fullChain {
+            if await !CircuitBreaker.shared.isOpen(m) { modelChain.append(m) }
+        }
+        if modelChain.isEmpty { modelChain = [model] }
         let start = Date()
         var lastError: Error = AIServiceError.empty
         for modelId in modelChain {
@@ -721,9 +741,12 @@ nonisolated struct AIService {
             for attempt in 0..<3 {
                 if Date().timeIntervalSince(start) > totalBudget { break }
                 do {
-                    return try await postChat(body: b)
+                    let result: T = try await postChat(body: b)
+                    await CircuitBreaker.shared.recordSuccess(modelId)
+                    return result
                 } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
                     lastError = AIServiceError.http(code)
+                    await CircuitBreaker.shared.recordFailure(modelId, transient: true)
                     // Brief backoff then try next model — these are provider-wide.
                     try? await Task.sleep(nanoseconds: 600_000_000)
                     break
@@ -753,8 +776,19 @@ nonisolated struct AIService {
         throw lastError
     }
 
-    private func callJSONVision<T: Decodable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
+    private func callJSONVision<T: Decodable & Sendable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
         guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
+        // Dedup identical in-flight scans (perceptual image hash + prompt hash) so
+        // a double-tap or two concurrent screens watching the same scan only hit
+        // the proxy once. RequestQueue also caps concurrency so a burst of users
+        // doesn't stampede the upstream provider.
+        let dedupKey = "vision|" + ImageDedupHash.hash(images) + "|" + AIResponseCache.hash(["p", String(prompt.hashValue)])
+        return try await RequestQueue.shared.run(key: dedupKey) { [self] in
+            try await callJSONVisionInner(prompt: prompt, images: images, as: T.self)
+        }
+    }
+
+    private func callJSONVisionInner<T: Decodable & Sendable>(prompt: String, images: [UIImage], as: T.Type) async throws -> T {
         // Adaptive sizing: scale down if too many images so we stay well under server payload limits (413).
         // Budget ~700KB per image of base64; aim for ~3.5MB total request body max.
         let count = max(1, images.count)
@@ -768,7 +802,15 @@ nonisolated struct AIService {
         }()
 
         var lastError: Error = AIServiceError.empty
-        let modelChain = [model] + fallbackModels
+        // Skip providers whose circuit breaker is currently open. If every
+        // provider is open we still try the primary as a probe so we don't
+        // strand the user — half-open behaviour.
+        let fullChain = [model] + fallbackModels
+        var modelChain: [String] = []
+        for m in fullChain {
+            if await !CircuitBreaker.shared.isOpen(m) { modelChain.append(m) }
+        }
+        if modelChain.isEmpty { modelChain = [model] }
         let start = Date()
         for modelId in modelChain {
             if Date().timeIntervalSince(start) > totalBudget { break }
@@ -787,12 +829,15 @@ nonisolated struct AIService {
                 for retry in 0..<3 {
                     if Date().timeIntervalSince(start) > totalBudget { break }
                     do {
-                        return try await postChat(body: body)
+                        let result: T = try await postChat(body: body)
+                        await CircuitBreaker.shared.recordSuccess(modelId)
+                        return result
                     } catch AIServiceError.http(let code) where code == 413 || code == 408 || code == 502 || code == 504 {
                         lastError = AIServiceError.http(code)
                         break // shrink images (next attempt)
                     } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
                         lastError = AIServiceError.http(code)
+                        await CircuitBreaker.shared.recordFailure(modelId, transient: true)
                         try? await Task.sleep(nanoseconds: 600_000_000)
                         break // try next model
                     } catch AIServiceError.decode {
@@ -834,7 +879,7 @@ nonisolated struct AIService {
         return parts
     }
 
-    private func postChat<T: Decodable>(body: [String: Any]) async throws -> T {
+    private func postChat<T: Decodable & Sendable>(body: [String: Any]) async throws -> T {
         guard !baseURL.isEmpty, !key.isEmpty,
               let url = URL(string: "\(baseURL)/v2/vercel/v1/chat/completions") else {
             throw AIServiceError.missingConfig

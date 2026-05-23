@@ -555,28 +555,18 @@ struct PhysiqueScanFlow: View {
             // many of the three angles produced a usable body signal. No floor
             // — a poor scan shows a low score honestly.
             let detectedFraction = Double(detectedPoses.count) / 3.0
-            // Source strength: pose joints > human rect > person mask > brightness.
-            let sourceStrength: Double = {
-                guard !detectedPoses.isEmpty else { return 0 }
-                let weights: [Double] = detectedPoses.map { p in
-                    switch p.detectionSource {
-                    case .pose: return 1.0
-                    case .humanRect: return 0.75
-                    case .personMask: return 0.6
-                    case .saliency: return 0.45
-                    case .brightness: return 0.25
-                    case .none: return 0
-                    }
-                }
-                return weights.reduce(0, +) / Double(weights.count)
-            }()
-            let coverageQuality = min(1, avgCov / 0.55)
-            let landmarkQuality = min(1, avgConfPose / 0.6)
+            // Honest confidence via the shared Vision Truth Layer's body-
+            // continuity scorer. Combines pose joint coverage, source
+            // strength, frame coverage, and lighting — never inflated. Low
+            // continuity → low confidence, no compensating fallback.
+            let continuityScores: [Double] = detectedPoses.map { pose in
+                BodyContinuity.score(pose: pose, lighting: min(1, pose.brightness * 1.6))
+            }
+            let avgContinuity = continuityScores.isEmpty
+                ? 0
+                : continuityScores.reduce(0, +) / Double(continuityScores.count)
             let bodyFatConfidence = max(0, min(98,
-                (0.45 * sourceStrength +
-                 0.25 * landmarkQuality +
-                 0.20 * coverageQuality +
-                 0.10 * detectedFraction) * 100
+                (0.75 * avgContinuity + 0.25 * detectedFraction) * 100
             ))
             let archetypeRaw: String = {
                 if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }

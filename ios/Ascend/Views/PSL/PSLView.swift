@@ -641,6 +641,11 @@ struct FaceScanSheet: View {
             // OFFLINE-FIRST: persist the deterministic result IMMEDIATELY, before
             // any network call. AI enrichment only updates text fields if it
             // succeeds; numeric scores are final.
+            let calibration = CalibrationResolver.resolve(for: user.appleUserId ?? "local", in: ctx)
+            let replayPayload = averaged.map {
+                ScanReplay.capture(measurements: $0, sampleCount: samples.count,
+                                   consistency: consistency, calibration: calibration)
+            } ?? ""
             let record = FaceScanRecord(
                 overallScore: det.pslScore,
                 symmetry: det.symmetry,
@@ -652,7 +657,11 @@ struct FaceScanSheet: View {
                 recommendations: deterministicFaceRecs(measurements: averaged, score: det),
                 hairstyles: deterministicHairstyles(measurements: averaged),
                 insight: deterministicFaceInsight(score: det),
-                imageData: nil
+                imageData: nil,
+                engineVersion: EngineRegistry.PSL.current.rawValue,
+                calibrationVersion: calibration.version,
+                inputHash: averaged.map { EngineRegistry.hashFaceMeasurements($0, sampleCount: samples.count) } ?? "",
+                inputPayload: replayPayload
             )
             ctx.insert(record)
             app.bumpStreakIfNeeded(user)
@@ -670,9 +679,16 @@ struct FaceScanSheet: View {
                 consistency: consistency,
                 history: history
             ) {
-                record.insight = raw.insight
-                record.recommendations = raw.recommendations
-                if !raw.hairstyles.isEmpty { record.hairstyles = raw.hairstyles }
+                // AI schema lock: text-only. Strip / reject any score smuggling.
+                if case .clean(let t) = AISchemaLock.validateText(raw.insight) {
+                    record.insight = t
+                } else if case .sanitized(let t, _) = AISchemaLock.validateText(raw.insight) {
+                    record.insight = t
+                }
+                let safeRecs = AISchemaLock.validateList(raw.recommendations)
+                if !safeRecs.isEmpty { record.recommendations = safeRecs }
+                let safeStyles = AISchemaLock.validateList(raw.hairstyles)
+                if !safeStyles.isEmpty { record.hairstyles = safeStyles }
                 try? ctx.save()
             }
             _ = try? await dwell

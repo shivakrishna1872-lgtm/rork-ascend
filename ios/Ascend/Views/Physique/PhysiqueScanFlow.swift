@@ -532,7 +532,8 @@ struct PhysiqueScanFlow: View {
                 backImageData: nil,
                 engineVersion: EngineRegistry.Physique.current.rawValue,
                 calibrationVersion: calibration.version,
-                inputHash: EngineRegistry.hashPhysiqueAnchors(anchors)
+                inputHash: EngineRegistry.hashPhysiqueAnchors(anchors),
+                inputPayload: ScanReplay.capture(anchors: anchors, calibration: calibration)
             )
             ctx.insert(record)
             try? ctx.save()

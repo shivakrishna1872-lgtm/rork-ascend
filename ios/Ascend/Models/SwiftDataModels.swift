@@ -180,6 +180,9 @@ final class PhysiqueScanRecord {
     var calibrationVersion: String = "calibration_v1"
     /// SHA-256 of the Vision anchors. Same inputs → same hash → reproducible.
     var inputHash: String = ""
+    /// Self-contained replay payload (JSON) — re-running through the same
+    /// engine version produces identical numbers. See `ScanReplay`.
+    var inputPayload: String = ""
 
     init(
         date: Date = .now,
@@ -198,7 +201,8 @@ final class PhysiqueScanRecord {
         backImageData: Data? = nil,
         engineVersion: String = EngineRegistry.Physique.current.rawValue,
         calibrationVersion: String = "calibration_v1",
-        inputHash: String = ""
+        inputHash: String = "",
+        inputPayload: String = ""
     ) {
         self.date = date
         self.physiqueScore = physiqueScore
@@ -217,6 +221,7 @@ final class PhysiqueScanRecord {
         self.engineVersion = engineVersion
         self.calibrationVersion = calibrationVersion
         self.inputHash = inputHash
+        self.inputPayload = inputPayload
     }
 
     var archetype: Archetype { Archetype(rawValue: archetypeRaw) ?? .balanced }
@@ -519,6 +524,9 @@ final class FaceScanRecord {
     var engineVersion: String = EngineRegistry.PSL.current.rawValue
     var calibrationVersion: String = "calibration_v1"
     var inputHash: String = ""
+    /// Self-contained replay payload (JSON) — re-running through the same
+    /// engine version produces identical numbers. See `ScanReplay`.
+    var inputPayload: String = ""
 
     init(
         date: Date = .now,
@@ -535,7 +543,8 @@ final class FaceScanRecord {
         imageData: Data? = nil,
         engineVersion: String = EngineRegistry.PSL.current.rawValue,
         calibrationVersion: String = "calibration_v1",
-        inputHash: String = ""
+        inputHash: String = "",
+        inputPayload: String = ""
     ) {
         self.date = date
         self.overallScore = overallScore
@@ -552,6 +561,7 @@ final class FaceScanRecord {
         self.engineVersion = engineVersion
         self.calibrationVersion = calibrationVersion
         self.inputHash = inputHash
+        self.inputPayload = inputPayload
     }
 }
 

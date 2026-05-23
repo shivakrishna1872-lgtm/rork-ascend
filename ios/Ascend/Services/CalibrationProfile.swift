@@ -41,6 +41,15 @@ final class CalibrationProfile {
     /// Count of feedback events folded in. Used to decay learning rate.
     var feedbackCount: Int
 
+    /// Lifetime cumulative absolute drift per metric. Once any of these hits
+    /// the drift cap, that metric is frozen for the rest of the user's life
+    /// on this calibration version — preventing slow runaway drift even if
+    /// thousands of feedback events arrive.
+    var lifetimeDriftPosture: Double = 0
+    var lifetimeDriftSymmetry: Double = 0
+    var lifetimeDriftVTaper: Double = 0
+    var lifetimeDriftCalories: Double = 0
+
     init(
         userKey: String,
         version: String = "calibration_v1",
@@ -50,7 +59,11 @@ final class CalibrationProfile {
         symmetryBias: Double = 0,
         vTaperBias: Double = 0,
         calorieOffsetPct: Double = 0,
-        feedbackCount: Int = 0
+        feedbackCount: Int = 0,
+        lifetimeDriftPosture: Double = 0,
+        lifetimeDriftSymmetry: Double = 0,
+        lifetimeDriftVTaper: Double = 0,
+        lifetimeDriftCalories: Double = 0
     ) {
         self.userKey = userKey
         self.version = version
@@ -61,12 +74,23 @@ final class CalibrationProfile {
         self.vTaperBias = vTaperBias
         self.calorieOffsetPct = calorieOffsetPct
         self.feedbackCount = feedbackCount
+        self.lifetimeDriftPosture = lifetimeDriftPosture
+        self.lifetimeDriftSymmetry = lifetimeDriftSymmetry
+        self.lifetimeDriftVTaper = lifetimeDriftVTaper
+        self.lifetimeDriftCalories = lifetimeDriftCalories
     }
 
     // MARK: - Bounded application helpers
 
     private static let scoreBiasBound = 0.15
     private static let calorieBiasBound = 0.10
+
+    /// Hard ceiling on lifetime cumulative |delta| per metric. Once exceeded,
+    /// further ingest calls for that metric are silently dropped. This is the
+    /// drift cap — guarantees calibration can never "slowly walk" past its
+    /// natural bounds even under sustained noisy feedback.
+    private static let lifetimeDriftScoreCap = 0.60
+    private static let lifetimeDriftCalorieCap = 0.40
 
     /// Neutral profile — used when calibration is missing or corrupted.
     /// Per spec: "If calibration fails → use neutral profile (all zeros)".
@@ -111,24 +135,54 @@ final class CalibrationProfile {
         let n = max(1, feedbackCount + 1)
         let alpha = max(0.04, 0.20 - Double(n) * 0.01)
 
-        func step(_ current: Double, _ signal: Double, bound: Double) -> Double {
-            let updated = current + alpha * signal
-            return max(-bound, min(bound, updated))
+        // Apply per-update bound AND lifetime drift cap. If the lifetime cap
+        // has been hit for this metric, the update is dropped silently — the
+        // profile is frozen at its current value for that metric.
+        func step(_ current: Double, _ signal: Double, perStepBound: Double,
+                  lifetimeUsed: Double, lifetimeCap: Double) -> (value: Double, driftAdded: Double) {
+            guard lifetimeUsed < lifetimeCap else { return (current, 0) }
+            // Allow the step to consume at most the remaining drift budget.
+            let remaining = max(0, lifetimeCap - lifetimeUsed)
+            let rawDelta = alpha * signal
+            let clippedDelta = max(-remaining, min(remaining, rawDelta))
+            let updated = current + clippedDelta
+            let bounded = max(-perStepBound, min(perStepBound, updated))
+            return (bounded, abs(clippedDelta))
         }
 
         switch metric {
         case .posture:
-            postureBias = step(postureBias, delta, bound: Self.scoreBiasBound)
+            let r = step(postureBias, delta, perStepBound: Self.scoreBiasBound,
+                         lifetimeUsed: lifetimeDriftPosture, lifetimeCap: Self.lifetimeDriftScoreCap)
+            postureBias = r.value
+            lifetimeDriftPosture += r.driftAdded
         case .symmetry:
-            symmetryBias = step(symmetryBias, delta, bound: Self.scoreBiasBound)
+            let r = step(symmetryBias, delta, perStepBound: Self.scoreBiasBound,
+                         lifetimeUsed: lifetimeDriftSymmetry, lifetimeCap: Self.lifetimeDriftScoreCap)
+            symmetryBias = r.value
+            lifetimeDriftSymmetry += r.driftAdded
         case .vTaper:
-            vTaperBias = step(vTaperBias, delta, bound: Self.scoreBiasBound)
+            let r = step(vTaperBias, delta, perStepBound: Self.scoreBiasBound,
+                         lifetimeUsed: lifetimeDriftVTaper, lifetimeCap: Self.lifetimeDriftScoreCap)
+            vTaperBias = r.value
+            lifetimeDriftVTaper += r.driftAdded
         case .calories:
-            calorieOffsetPct = step(calorieOffsetPct, delta, bound: Self.calorieBiasBound)
+            let r = step(calorieOffsetPct, delta, perStepBound: Self.calorieBiasBound,
+                         lifetimeUsed: lifetimeDriftCalories, lifetimeCap: Self.lifetimeDriftCalorieCap)
+            calorieOffsetPct = r.value
+            lifetimeDriftCalories += r.driftAdded
         }
 
         feedbackCount += 1
         updatedAt = now
+    }
+
+    /// Returns true if any metric has been frozen by the lifetime drift cap.
+    var isDriftCapped: Bool {
+        lifetimeDriftPosture  >= Self.lifetimeDriftScoreCap   ||
+        lifetimeDriftSymmetry >= Self.lifetimeDriftScoreCap   ||
+        lifetimeDriftVTaper   >= Self.lifetimeDriftScoreCap   ||
+        lifetimeDriftCalories >= Self.lifetimeDriftCalorieCap
     }
 }
 

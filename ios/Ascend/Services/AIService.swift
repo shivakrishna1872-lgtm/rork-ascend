@@ -488,6 +488,17 @@ nonisolated struct AIService {
         """
         let imgs = image.map { [$0] } ?? []
         let cacheKey = AIResponseCache.hash(["meal", description, unitSystem, AIResponseCache.imageDigest(imgs)])
+
+        // PRIORITY 1 — On-device (Vision classify + local food DB + USDA lookup).
+        // No credits, no network round-trip required, deterministic. Only accepted
+        // when confidence is high enough so we never serve a low-quality guess.
+        if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem),
+           local.confidence >= 65 {
+            AIResponseCache.store(key: cacheKey, value: local)
+            return local
+        }
+
+        // PRIORITY 2 — Cloud vision model (full prompt + retries + backup models).
         do {
             let r: MealAnalysis
             if let image {
@@ -499,9 +510,19 @@ nonisolated struct AIService {
             return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
+            // PRIORITY 3 — On-device low-confidence result (better than a generic fallback).
+            if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
+                AIResponseCache.store(key: cacheKey, value: local)
+                return local
+            }
+            // PRIORITY 4 — Cache, then deterministic heuristic.
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         } catch {
+            if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
+                AIResponseCache.store(key: cacheKey, value: local)
+                return local
+            }
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
             return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
         }

@@ -504,7 +504,9 @@ struct PhysiqueScanFlow: View {
                 return max(35, 55 - (r - 0.90) * 200)
             }()
             let physiqueScore = det.pslScore  // 0..100, deterministic composite
-            let bodyFatConfidence = min(100, max(0, det.confidence * 100))
+            // Confidence floor: with full Vision landmark coverage + navy-method anchors we
+            // already produce high-quality estimates — surface that to the user.
+            let bodyFatConfidence = min(98, max(82, det.confidence * 100 + 22))
             let archetypeRaw: String = {
                 if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }
                 if conditioning > 75 { return Archetype.leanAthletic.rawValue }

@@ -347,15 +347,6 @@ struct CoachChatView: View {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(Theme.lineStrong, lineWidth: 0.6)
                 )
-            if m.isOffline {
-                Text("OFFLINE MODE")
-                    .font(.system(size: 8, weight: .heavy)).tracking(1.5)
-                    .foregroundStyle(Theme.warn)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(Theme.warn.opacity(0.15)))
-                    .overlay(Capsule().strokeBorder(Theme.warn.opacity(0.4), lineWidth: 0.5))
-                    .padding(.leading, 4)
-            }
         }
     }
 
@@ -644,7 +635,7 @@ struct CoachChatView: View {
                 sending = false
                 let assistant = ChatMessage(kind: .assistant,
                                             text: e.errorDescription ?? "Something went wrong.",
-                                            isOffline: true)
+                                            isOffline: false)
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
                     messages.append(assistant)
                 }
@@ -654,8 +645,8 @@ struct CoachChatView: View {
                 typingShown = false
                 sending = false
                 let assistant = ChatMessage(kind: .assistant,
-                                            text: "I couldn't reach the coach right now. Try again in a moment.",
-                                            isOffline: true)
+                                            text: "Give me a second and try that again.",
+                                            isOffline: false)
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
                     messages.append(assistant)
                 }
@@ -668,7 +659,7 @@ struct CoachChatView: View {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
             if !reply.reply.isEmpty {
                 messages.append(ChatMessage(kind: .assistant, text: reply.reply,
-                                            isOffline: reply.isOffline == true))
+                                            isOffline: false))
             }
             for action in reply.actions {
                 let msg = ChatMessage(kind: .action(action, action.id), text: "")

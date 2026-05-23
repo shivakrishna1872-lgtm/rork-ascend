@@ -638,7 +638,14 @@ nonisolated struct AIService {
         }
         guard await AIConsentService.shared.ensureConsent() else { throw AIServiceError.consentDenied }
 
-        let modelChain = [model] + fallbackModels
+        // Skip providers whose breaker is open. Probe primary if all are open.
+        let fullChain = [model] + fallbackModels
+        var modelChain: [String] = []
+        for m in fullChain {
+            if await !CircuitBreaker.shared.isOpen(m) { modelChain.append(m) }
+        }
+        if modelChain.isEmpty { modelChain = [model] }
+
         let start = Date()
         for modelId in modelChain {
             if Date().timeIntervalSince(start) > totalBudget { break }
@@ -647,13 +654,15 @@ nonisolated struct AIService {
                 "temperature": 0.4,
                 "messages": messages
             ]
-            // 3 attempts per model with progressive backoff before moving to next fallback.
             for attempt in 0..<3 {
                 if Date().timeIntervalSince(start) > totalBudget { break }
                 do {
-                    let reply: CoachReply = try await postChat(body: body)
+                    // Lenient: parses JSON if present, otherwise wraps plain text as `reply`.
+                    let reply = try await postChatCoach(body: body)
+                    await CircuitBreaker.shared.recordSuccess(modelId)
                     return reply
                 } catch AIServiceError.http(let code) where code == 402 || code == 429 || code == 500 || code == 503 {
+                    await CircuitBreaker.shared.recordFailure(modelId, transient: true)
                     try? await Task.sleep(nanoseconds: 600_000_000)
                     break // next model
                 } catch {
@@ -666,6 +675,46 @@ nonisolated struct AIService {
         }
         // Last-resort deterministic on-device reply. Should be rare now.
         return CoachHeuristic.chatReply(history: history, context: context)
+    }
+
+    /// Coach-specific lenient POST: returns CoachReply whether the model emitted
+    /// strict JSON, fenced JSON, JSON inside prose, or pure plain text. Plain
+    /// text gets wrapped as `reply` with no actions — chat never breaks because
+    /// of a formatting hiccup.
+    private func postChatCoach(body: [String: Any]) async throws -> CoachReply {
+        guard !baseURL.isEmpty, !key.isEmpty,
+              let url = URL(string: "\(baseURL)/v2/vercel/v1/chat/completions") else {
+            throw AIServiceError.missingConfig
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 75
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw AIServiceError.empty }
+        guard (200..<300).contains(http.statusCode) else { throw AIServiceError.http(http.statusCode) }
+
+        let wire = try JSONDecoder().decode(ChatWire.self, from: data)
+        guard let content = wire.choices.first?.message.content, !content.isEmpty else {
+            throw AIServiceError.empty
+        }
+        // First try strict JSON (model followed instructions).
+        let cleaned = stripJSON(content)
+        if let jsonData = cleaned.data(using: .utf8),
+           let parsed = try? JSONDecoder().decode(CoachReply.self, from: jsonData),
+           !parsed.reply.isEmpty || !parsed.actions.isEmpty {
+            return parsed
+        }
+        // Fallback: strip any leftover JSON braces/fences and surface as plain prose.
+        let prose = content
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prose.isEmpty else { throw AIServiceError.empty }
+        return CoachReply(reply: prose, actions: [], isOffline: false)
     }
 
     func dailyInsight(profile: ProfileSnapshot, streak: Int, recentScansCount: Int, caloriesAdherence: Double) async throws -> DailyInsight {

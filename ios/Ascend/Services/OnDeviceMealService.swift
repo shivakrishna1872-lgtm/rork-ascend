@@ -38,6 +38,32 @@ nonisolated struct OnDeviceMealService {
         var ocrTextHits: [String] = []
         var hadImage = false
 
+        // Deterministic content-addressed cache: identical photo → identical
+        // result, no Vision re-runs, no AI variance.
+        let engineVersion = EngineRegistry.Nutrition.current.rawValue
+        let cacheKey: String? = {
+            if let image {
+                return ScanCache.normalize(image).hash + "|" + engineVersion
+            }
+            if !trimmed.isEmpty {
+                return ScanCache.textHash(trimmed, engine: engineVersion)
+            }
+            return nil
+        }()
+        if let key = cacheKey, let cached = ScanCache.loadFood(hash: key) {
+            return MealAnalysis(
+                name: cached.dishName,
+                dishType: cached.dishType,
+                ingredients: cached.ingredients.map { MealIngredient(name: $0.name, portion: $0.portion) },
+                calories: cached.calories,
+                proteinG: cached.proteinG,
+                carbsG: cached.carbsG,
+                fatsG: cached.fatsG,
+                confidence: cached.confidence,
+                note: cached.note
+            )
+        }
+
         if let image {
             hadImage = true
             // Lightweight preprocessing for better Vision recall under poor lighting / blur.
@@ -65,7 +91,19 @@ nonisolated struct OnDeviceMealService {
         // resolution success later.
         guard !matches.isEmpty else { return nil }
 
+        // Top-K consensus: cross-check texture / color / shape / ingredient
+        // family before locking in a name. Ensures "chicken biryani" vs
+        // "fried rice" vs "jambalaya" resolves the same way every scan.
+        let ranked = FoodConsensus.score(matches, image: image)
+        let consensusKeys = Set(ranked.prefix(8).map(\.key))
+        let orderedMatches: [FoodMatch] = ranked.prefix(8).compactMap { entry in
+            matches.first { $0.rawKey == entry.key }
+        }
+        matches = orderedMatches.isEmpty ? matches : (orderedMatches + matches.filter { !consensusKeys.contains($0.rawKey) })
+
         // Resolve each match to macros (local DB → Open Food Facts → USDA).
+        // Nutrition values ALWAYS come from the deterministic databases —
+        // AI never gets to author calorie numbers directly.
         var ingredients: [ResolvedIngredient] = []
         for m in matches.prefix(8) {
             if let resolved = await resolve(match: m) {
@@ -101,14 +139,23 @@ nonisolated struct OnDeviceMealService {
         let floor: Double = ocrBoost > 0 ? 88 : (hadImage ? 84 : 82)
         let confidence = Int(max(floor, min(98, raw + 60)).rounded())
 
-        // Prefer the OCR-detected display name when present (most recognizable).
+        // Prefer consensus winner for the display name. OCR brand hits are
+        // already weighted highest inside FoodConsensus, so this also covers
+        // the "photographed the menu" path.
         let dishName: String = {
+            if let top = ranked.first { return top.displayName }
             if let ocrHit = matches.first(where: { $0.source == .ocr }) { return ocrHit.displayName }
             return matches.first?.displayName.capitalizedDishName ?? "Meal"
         }()
         let dishType = inferDishType(from: matches)
 
-        return MealAnalysis(
+        // Confidence floor adapts to consensus strength so the UI never reads
+        // an artificially high score when the top candidate is shaky.
+        let consensusConf = FoodConsensus.confidence(top: Array(ranked.prefix(3)))
+        let consensusAdjusted = Int(max(Double(confidence) * 0.85, Double(confidence) * 0.55 + consensusConf * 45).rounded())
+        let finalConfidence = min(98, max(50, consensusAdjusted))
+
+        let analysis = MealAnalysis(
             name: dishName,
             dishType: dishType,
             ingredients: ing,
@@ -116,9 +163,25 @@ nonisolated struct OnDeviceMealService {
             proteinG: Int(p.rounded()),
             carbsG: Int(c.rounded()),
             fatsG: Int(f.rounded()),
-            confidence: confidence,
+            confidence: finalConfidence,
             note: noteFor(kcal: kcal, p: p, c: c, f: f, ocrHits: ocrTextHits, unitSystem: unitSystem)
         )
+
+        if let key = cacheKey {
+            ScanCache.saveFood(hash: key, result: CachedFoodResult(
+                dishName: analysis.name,
+                dishType: analysis.dishType,
+                ingredients: analysis.ingredients.map { CachedFoodResult.Item(name: $0.name, portion: $0.portion) },
+                calories: analysis.calories,
+                proteinG: analysis.proteinG,
+                carbsG: analysis.carbsG,
+                fatsG: analysis.fatsG,
+                confidence: analysis.confidence,
+                note: analysis.note,
+                engineVersion: engineVersion
+            ))
+        }
+        return analysis
     }
 
     // MARK: - Preprocessing (lightweight, meal-tuned)

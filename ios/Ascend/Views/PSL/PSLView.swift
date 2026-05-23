@@ -584,12 +584,21 @@ struct FaceScanSheet: View {
             //    Only photos where a face is actually detected are eligible for scoring.
             var samples: [FaceMeasurements] = []
             var faceImages: [UIImage] = []
+            let faceEngine = EngineRegistry.PSL.current.rawValue
             for img in imgs {
+                // Content-addressed cache: same selfie → same anchors.
+                let key = ScanCache.normalize(img).hash + "|" + faceEngine
+                if let hit = ScanCache.loadFace(hash: key) {
+                    samples.append(hit.measurements)
+                    faceImages.append(img)
+                    continue
+                }
                 // Preprocess each selfie (normalize lighting, crop to subject) so
                 // landmark extraction is angle/lighting-invariant.
                 let pre = await ImagePreprocessor.shared.process(img, mode: .face)
                 let cleaned = pre.receipt.isUsable ? pre.image : img
                 if let m = await PoseService.shared.analyzeFace(cleaned) {
+                    ScanCache.saveFace(hash: key, anchors: CachedFaceAnchors(m, engineVersion: faceEngine))
                     samples.append(m)
                     faceImages.append(cleaned)
                 }

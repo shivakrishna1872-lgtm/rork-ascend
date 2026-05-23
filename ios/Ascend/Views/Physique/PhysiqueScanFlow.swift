@@ -116,7 +116,18 @@ struct PhysiqueScanFlow: View {
         // landmark extraction so quality is consistent across angles/lighting.
         let pre = await ImagePreprocessor.shared.process(img, mode: .body)
         captureBuffer = pre.image
+        // Content-addressed cache: same photo → same pose anchors, no
+        // duplicate Vision pass.
+        let engine = EngineRegistry.Physique.current.rawValue
+        let key = ScanCache.normalize(img).hash + "|" + engine
+        if let cached = ScanCache.loadBody(hash: key) {
+            withAnimation { poseResult = cached.pose }
+            return
+        }
         let pose = await PoseService.shared.analyze(pre.image)
+        if let pose {
+            ScanCache.saveBody(hash: key, anchors: CachedBodyAnchors(pose, engineVersion: engine))
+        }
         withAnimation { poseResult = pose }
     }
 
@@ -412,9 +423,20 @@ struct PhysiqueScanFlow: View {
         do {
             // 1) On-device body detection (Vision = MediaPipe-equivalent on iOS) on EVERY photo.
             //    Only photos where a body is actually detected count toward scoring.
-            async let frontPose = PoseService.shared.analyze(f)
-            async let sidePose = PoseService.shared.analyze(s)
-            async let backPose = PoseService.shared.analyze(b)
+            //    Per-image cache: same photo bytes → same anchors, no Vision re-run.
+            let engine = EngineRegistry.Physique.current.rawValue
+            func cachedAnalyze(_ img: UIImage) async -> PoseResult? {
+                let key = ScanCache.normalize(img).hash + "|" + engine
+                if let hit = ScanCache.loadBody(hash: key) { return hit.pose }
+                let pose = await PoseService.shared.analyze(img)
+                if let pose {
+                    ScanCache.saveBody(hash: key, anchors: CachedBodyAnchors(pose, engineVersion: engine))
+                }
+                return pose
+            }
+            async let frontPose = cachedAnalyze(f)
+            async let sidePose = cachedAnalyze(s)
+            async let backPose = cachedAnalyze(b)
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
 
             // A pose counts as "body detected" if Vision returned ANY landmark

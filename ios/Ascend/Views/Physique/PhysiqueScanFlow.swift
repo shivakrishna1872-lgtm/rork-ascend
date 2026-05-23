@@ -369,6 +369,26 @@ struct PhysiqueScanFlow: View {
         analyzing = true
     }
 
+    // MARK: - Deterministic text fallbacks (used before AI enrichment)
+
+    private func deterministicInsight(anchors: PhysiqueAnchors, score: Double, vTaper: Double, conditioning: Double) -> String {
+        if score >= 80 { return "Strong overall physique — V-taper and conditioning both reading well." }
+        if vTaper > conditioning + 10 { return "V-taper is your standout — leaning out further would compound it." }
+        if conditioning > vTaper + 10 { return "Lean and defined — added shoulder/back width would unlock the next tier." }
+        if anchors.shoulderTiltDeg.magnitude > 6 { return "Posture shows a noticeable shoulder tilt — fixing it will lift your scores broadly." }
+        return "Balanced base — small consistent improvements will move every metric together."
+    }
+
+    private func deterministicRecommendations(anchors: PhysiqueAnchors, conditioning: Double, vTaper: Double, posture: Double) -> [String] {
+        var tips: [String] = []
+        if conditioning < 65 { tips.append("Trim 200–300 kcal/day to drop waist/shoulder ratio and unlock conditioning.") }
+        if vTaper < 60 { tips.append("Prioritize lateral delts and lat width — 4–6 sets each, twice weekly.") }
+        if posture < 70 || anchors.shoulderTiltDeg.magnitude > 4 { tips.append("Daily 5-minute thoracic + scapular mobility to square the shoulders.") }
+        if anchors.thighHipRatio < 0.85 { tips.append("Add a dedicated lower-body session per week to balance proportions.") }
+        if tips.count < 3 { tips.append("Track weekly photos under the same lighting — small wins compound.") }
+        return Array(tips.prefix(3))
+    }
+
     private func runAnalysis() async {
         guard let f = front, let s = side, let b = back else { return }
         let snap = ProfileSnapshot(age: user.ageValue, sex: user.sexRaw, heightCm: user.heightCm, weightKg: user.weightKg, goals: user.goalsRaw, unitSystem: user.unitSystemRaw)
@@ -456,70 +476,54 @@ struct PhysiqueScanFlow: View {
                 detectedAngles: detectedPoses.count,
                 navyBodyFatPercent: navyBF
             )
-            let rawAnalysis = try await AIService.shared.analyzePhysique(
-                front: f, side: s, back: b, profile: snap, history: history, anchors: anchors
-            )
 
-            // --- Multi-angle averaging (MediaPipe-style) ---
-            // Symmetry: trimmed-mean across every angle that detected a body.
-            // Front + back are weighted higher than side (side view distorts L/R).
-            let symmetrySamples: [(value: Double, weight: Double)] = [
-                poses[0].map { ($0.symmetry * 100, 1.0) },
-                poses[1].map { ($0.symmetry * 100, 0.4) },
-                poses[2].map { ($0.symmetry * 100, 0.9) }
-            ].compactMap { $0 }
-            let measuredSymmetry: Double = {
-                guard !symmetrySamples.isEmpty else { return rawAnalysis.symmetry }
-                let totalW = symmetrySamples.reduce(0) { $0 + $1.weight }
-                return symmetrySamples.reduce(0) { $0 + $1.value * $1.weight } / totalW
+            // === DETERMINISTIC CORE (highest authority) ============================
+            // All numeric scores come from on-device Vision + fixed math. AI cannot
+            // modify these values — it is reserved for text-only enrichment below.
+            let det = DeterministicScoring.shared.score(anchors: anchors)
+            let symmetry100 = det.symmetry * 100
+            let posture100 = det.posture * 100
+            let composition100 = det.bodyComposition * 100
+            // V-taper score: deterministic mapping from shoulder/hip ratio.
+            let vTaperRaw = max(0.9, min(1.9, anchors.shoulderWaistRatio))
+            let vTaper = min(100, max(0, (vTaperRaw - 1.0) * 125))
+            // Muscularity: deterministic blend of v-taper + thigh/hip + limb development.
+            let muscularity = min(100, max(0,
+                0.55 * vTaper +
+                0.25 * min(100, anchors.thighHipRatio * 70) +
+                0.20 * min(100, anchors.limbSymmetry * 100)
+            ))
+            // Conditioning correlates inversely with waist/shoulder ratio.
+            let conditioning: Double = {
+                let r = anchors.waistShoulderRatio
+                if r < 0.76 { return 88 + (0.76 - r) * 80 }
+                if r < 0.82 { return 72 + (0.82 - r) * 270 }
+                if r < 0.90 { return 55 + (0.90 - r) * 215 }
+                return max(35, 55 - (r - 0.90) * 200)
             }()
-            // V-taper: averaged shoulder/hip ratio from front + back; side is unreliable.
-            let vTaperSamples: [Double] = [poses[0], poses[2]].compactMap { p in
-                guard let p else { return nil }
-                let r = max(0.9, min(1.9, p.shoulderWaistRatio))
-                return min(100, max(0, (r - 1.0) * 125))
-            }
-            let measuredVTaper: Double = vTaperSamples.isEmpty
-                ? rawAnalysis.vTaper
-                : vTaperSamples.reduce(0, +) / Double(vTaperSamples.count)
+            let physiqueScore = det.pslScore  // 0..100, deterministic composite
+            let bodyFatConfidence = min(100, max(0, det.confidence * 100))
+            let archetypeRaw: String = {
+                if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }
+                if conditioning > 75 { return Archetype.leanAthletic.rawValue }
+                if muscularity > 70 { return Archetype.powerBuild.rawValue }
+                return Archetype.balanced.rawValue
+            }()
+            // ======================================================================
 
-            // Blend AI + averaged on-device measurements (45/55 toward on-device for stability).
-            let symmetry = min(100, max(0, rawAnalysis.symmetry * 0.45 + measuredSymmetry * 0.55))
-            let vTaper = min(100, max(0, rawAnalysis.vTaper * 0.45 + measuredVTaper * 0.55))
-
-            // Confidence boost scales with the NUMBER of angles successfully detected.
-            let detected = poses.compactMap { $0 }
-            let avgPoseConfidence = detected.isEmpty
-                ? 0
-                : detected.map(\.confidenceAverage).reduce(0, +) / Double(detected.count)
-            let coverageBoost = Double(detected.count) * 5.0 // +5/angle, up to +15
-            let bodyFatConfidence = min(100, max(0, rawAnalysis.bodyFatConfidence + avgPoseConfidence * 10 + coverageBoost))
-            // Minimum dwell time for cinematic pacing (snappy)
-            try? await Task.sleep(for: .seconds(1.2))
-
-            // Smooth final scores against the user's recent rolling average so similar
-            // photos don't produce wildly different numbers between sessions.
-            var analysis = PhysiqueSmoothing.smooth(
-                raw: rawAnalysis,
-                blendedSymmetry: symmetry,
-                blendedVTaper: vTaper,
-                priors: priorScans
-            )
-
-            // Deterministic spec: no cross-metric harmonization, no blending
-            // with past scans. The analysis above is final.
-
+            // OFFLINE-FIRST: save the deterministic result IMMEDIATELY, before any
+            // network call. If AI enrichment fails, the scan is already persisted.
             let record = PhysiqueScanRecord(
-                physiqueScore: analysis.physiqueScore,
-                symmetryScore: analysis.symmetry,
-                muscularityScore: analysis.muscularity,
-                conditioningScore: analysis.conditioning,
-                vTaperScore: analysis.vTaper,
-                bodyFatPercent: analysis.bodyFatPercent,
+                physiqueScore: physiqueScore,
+                symmetryScore: symmetry100,
+                muscularityScore: muscularity,
+                conditioningScore: conditioning,
+                vTaperScore: vTaper,
+                bodyFatPercent: anchors.navyBodyFatPercent,
                 bodyFatConfidence: bodyFatConfidence,
-                archetypeRaw: analysis.archetype,
-                recommendations: analysis.recommendations,
-                insight: analysis.insight,
+                archetypeRaw: archetypeRaw,
+                recommendations: deterministicRecommendations(anchors: anchors, conditioning: conditioning, vTaper: vTaper, posture: posture100),
+                insight: deterministicInsight(anchors: anchors, score: physiqueScore, vTaper: vTaper, conditioning: conditioning),
                 frontImageData: nil,
                 sideImageData: nil,
                 backImageData: nil
@@ -530,6 +534,23 @@ struct PhysiqueScanFlow: View {
             app.awardXP(60, to: user)
             try? ctx.save()
             WidgetSync.push(user: user, context: ctx)
+
+            // === AI ENRICHMENT (lowest authority — text only) ======================
+            // Optional: try to upgrade the insight/recommendations text. Numeric
+            // scores are NEVER overwritten. Failures are silent — the deterministic
+            // record already saved above is the canonical result.
+            // Minimum dwell time for cinematic pacing.
+            async let dwell: Void = Task.sleep(for: .seconds(1.2))
+            if let rawAnalysis = try? await AIService.shared.analyzePhysique(
+                front: f, side: s, back: b, profile: snap, history: history, anchors: anchors
+            ) {
+                record.insight = rawAnalysis.insight
+                record.recommendations = rawAnalysis.recommendations
+                // archetype is a label, not a score — safe to take from AI if provided.
+                if !rawAnalysis.archetype.isEmpty { record.archetypeRaw = rawAnalysis.archetype }
+                try? ctx.save()
+            }
+            _ = try? await dwell
 
             await MainActor.run {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {

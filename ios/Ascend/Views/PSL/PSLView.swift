@@ -538,6 +538,45 @@ struct FaceScanSheet: View {
         }
     }
 
+    // MARK: - Deterministic text fallbacks (used before AI enrichment)
+
+    private func deterministicFaceInsight(score: DeterministicFaceScoring.Score) -> String {
+        guard score.isUsable else { return "Add a clearer front-facing selfie to score." }
+        let best = [
+            ("symmetry", score.symmetry),
+            ("jawline", score.jawline),
+            ("thirds", score.thirds),
+            ("canthal tilt", score.canthalTilt),
+            ("eye spacing", score.eyeSpacing)
+        ].max(by: { $0.1 < $1.1 })?.0 ?? "symmetry"
+        if score.pslScore >= 80 { return "Strong harmony — \(best) is your standout." }
+        if score.pslScore >= 65 { return "Solid baseline — \(best) is leading the rest." }
+        return "Balanced features — grooming and posture upgrades will move you up fastest."
+    }
+
+    private func deterministicFaceRecs(measurements: FaceMeasurements?, score: DeterministicFaceScoring.Score) -> [String] {
+        guard score.isUsable, let m = measurements else {
+            return [
+                "Use a clear, front-facing selfie with even lighting.",
+                "Frame your full face — eyes, nose, and mouth all visible.",
+                "Avoid heavy shadows; soft natural light works best."
+            ]
+        }
+        var tips: [String] = []
+        if m.jawRatio < 0.70 || m.jawRatio > 0.80 { tips.append("Reducing body-fat 2–3% sharpens jawline definition fastest.") }
+        if score.symmetry < 75 { tips.append("Daily posture work + symmetric chewing habits help facial symmetry over time.") }
+        if score.canthalTilt < 65 { tips.append("Brow grooming + good sleep posture lift the perceived canthal tilt.") }
+        if tips.count < 3 { tips.append("Consistent skincare and 7+ hours sleep compound visibly within 4 weeks.") }
+        return Array(tips.prefix(3))
+    }
+
+    private func deterministicHairstyles(measurements: FaceMeasurements?) -> [String] {
+        guard let m = measurements else { return ["Textured Crop", "Side Part"] }
+        if m.jawRatio > 0.78 { return ["Textured Crop", "Buzz Fade"] }     // wider jaw → short on sides
+        if m.jawRatio < 0.72 { return ["Side Part", "Mid Length Sweep"] }   // narrower → add width
+        return ["Textured Crop", "Modern Quiff"]
+    }
+
     private func analyze(_ imgs: [UIImage]) async {
         analyzing = true
         do {
@@ -591,31 +630,28 @@ struct FaceScanSheet: View {
             let averaged = FaceMeasurements.averaged(samples)
             let consistency = FaceMeasurements.consistency(samples)
 
-            // 3) AI cross-references only the face-confirmed images, anchored to averaged measurements.
-            let history = FaceSmoothing.history(from: priorFaces)
-            let rawAnalysis = try await AIService.shared.analyzeFace(
-                images: faceImages,
-                measurements: averaged,
-                sampleCount: samples.count,
-                consistency: consistency,
-                history: history
+            // === DETERMINISTIC CORE (highest authority) ============================
+            // All numeric PSL outputs come from on-device Vision + fixed math.
+            // AI cannot modify these values — reserved for text-only enrichment.
+            let det = DeterministicFaceScoring.shared.score(
+                measurements: averaged, sampleCount: samples.count, consistency: consistency
             )
-            // Deterministic spec: no cross-scan smoothing, no harmonization.
-            // Raw analysis (anchored to on-device measurements) is final.
-            let r = rawAnalysis
-            try? await Task.sleep(for: .seconds(1.0))
-            // Photos are intentionally not retained — only the derived scores.
+            // ======================================================================
+
+            // OFFLINE-FIRST: persist the deterministic result IMMEDIATELY, before
+            // any network call. AI enrichment only updates text fields if it
+            // succeeds; numeric scores are final.
             let record = FaceScanRecord(
-                overallScore: r.overall,
-                symmetry: r.symmetry,
-                jawline: r.jawline,
-                thirds: r.thirds,
-                canthalTilt: r.canthalTilt,
-                eyeSpacing: r.eyeSpacing,
-                glowUpPotential: r.glowUpPotential,
-                recommendations: r.recommendations,
-                hairstyles: r.hairstyles,
-                insight: r.insight,
+                overallScore: det.pslScore,
+                symmetry: det.symmetry,
+                jawline: det.jawline,
+                thirds: det.thirds,
+                canthalTilt: det.canthalTilt,
+                eyeSpacing: det.eyeSpacing,
+                glowUpPotential: det.glowUpPotential,
+                recommendations: deterministicFaceRecs(measurements: averaged, score: det),
+                hairstyles: deterministicHairstyles(measurements: averaged),
+                insight: deterministicFaceInsight(score: det),
                 imageData: nil
             )
             ctx.insert(record)
@@ -623,6 +659,23 @@ struct FaceScanSheet: View {
             app.awardXP(40, to: user)
             try? ctx.save()
             WidgetSync.push(user: user, context: ctx)
+
+            // === AI ENRICHMENT (lowest authority — text only) ======================
+            async let dwell: Void = Task.sleep(for: .seconds(1.0))
+            let history = FaceSmoothing.history(from: priorFaces)
+            if let raw = try? await AIService.shared.analyzeFace(
+                images: faceImages,
+                measurements: averaged,
+                sampleCount: samples.count,
+                consistency: consistency,
+                history: history
+            ) {
+                record.insight = raw.insight
+                record.recommendations = raw.recommendations
+                if !raw.hairstyles.isEmpty { record.hairstyles = raw.hairstyles }
+                try? ctx.save()
+            }
+            _ = try? await dwell
             await MainActor.run {
                 withAnimation(.smooth(duration: 0.5)) {
                     self.result = record

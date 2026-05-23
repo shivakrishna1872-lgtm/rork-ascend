@@ -21,6 +21,7 @@ struct CoachChatView: View {
     @State private var pendingImages: [UIImage] = []
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var typingShown: Bool = false
+    @State private var showWorkouts: Bool = false
     @FocusState private var inputFocused: Bool
 
     private var shouldShowStarters: Bool {
@@ -101,6 +102,9 @@ struct CoachChatView: View {
         .onChange(of: pickerItems) { _, items in
             Task { await loadPickedImages(items) }
         }
+        .sheet(isPresented: $showWorkouts) {
+            WorkoutsHubView(user: user)
+        }
     }
 
     // MARK: - Header
@@ -124,6 +128,17 @@ struct CoachChatView: View {
                     .foregroundStyle(Theme.textPrimary)
             }
             Spacer()
+            Button {
+                Haptics.tap()
+                showWorkouts = true
+            } label: {
+                Image(systemName: "dumbbell.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .frame(width: 38, height: 38)
+                    .glassCard(radius: 12)
+            }
+            .buttonStyle(.plain)
             Button {
                 Haptics.tap()
                 withAnimation(.smooth(duration: 0.35)) {

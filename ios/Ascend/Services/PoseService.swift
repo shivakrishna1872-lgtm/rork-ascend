@@ -25,6 +25,13 @@ nonisolated struct PoseResult {
     /// Shoulder slope tilt in degrees off horizontal. Used for posture.
     let shoulderTiltDeg: Double
     let issues: [String]
+    /// Where the detection signal came from. Used to compute a realistic
+    /// confidence number — pose joints > human rectangle > person mask > brightness.
+    let detectionSource: DetectionSource
+
+    enum DetectionSource: String {
+        case pose, humanRect, personMask, saliency, brightness, none
+    }
 }
 
 nonisolated struct FaceMeasurements {
@@ -89,15 +96,19 @@ nonisolated struct PoseService {
 
     func analyze(_ image: UIImage) async -> PoseResult? {
         guard let cg = image.cgImage else { return nil }
-        let request = VNDetectHumanBodyPoseRequest()
+        // Run multiple detectors in one Vision pass so we can fall through
+        // gracefully: full pose → human rectangle → person segmentation mask
+        // → saliency / brightness. Any signal is treated as "body detected".
+        let poseReq = VNDetectHumanBodyPoseRequest()
+        let rectReq = VNDetectHumanRectanglesRequest()
+        rectReq.upperBodyOnly = false
+        let segReq = VNGeneratePersonSegmentationRequest()
+        segReq.qualityLevel = .balanced
+        segReq.outputPixelFormat = kCVPixelFormatType_OneComponent8
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
-        do {
-            try handler.perform([request])
-        } catch {
-            return analyzeFallback(cg: cg)
-        }
-        guard let obs = request.results?.first else {
-            return analyzeFallback(cg: cg)
+        try? handler.perform([poseReq, rectReq, segReq])
+        guard let obs = poseReq.results?.first else {
+            return analyzeFallback(cg: cg, rect: rectReq.results?.first, seg: segReq.results?.first)
         }
 
         let names: [VNHumanBodyPoseObservation.JointName] = [
@@ -235,7 +246,8 @@ nonisolated struct PoseService {
             torsoAspect: torsoAspect,
             limbSymmetry: limbSymmetry,
             shoulderTiltDeg: shoulderTiltDeg,
-            issues: issues
+            issues: issues,
+            detectionSource: .pose
         )
     }
 
@@ -412,11 +424,69 @@ nonisolated struct PoseService {
         )
     }
 
-    private func analyzeFallback(cg: CGImage) -> PoseResult {
-        PoseResult(
+    /// Secondary detection path. Runs when full body-pose joints aren't
+    /// available — falls through human-rectangle → person segmentation mask
+    /// → brightness-only signal so we don't reject usable images.
+    private func analyzeFallback(cg: CGImage,
+                                 rect: VNHumanObservation?,
+                                 seg: VNPixelBufferObservation?) -> PoseResult {
+        let bright = brightness(cg: cg)
+
+        // 1) Human rectangle observation (Vision body detector, separate from pose).
+        if let r = rect {
+            let bb = r.boundingBox // normalized, origin bottom-left
+            let coverage = Double(bb.width * bb.height)
+            let centerX = Double(bb.midX)
+            // Vision rect confidence is generally 0.5..1.0.
+            let conf = Double(r.confidence)
+            return PoseResult(
+                landmarks: [:],
+                confidenceAverage: conf,
+                brightness: bright,
+                centeringX: centerX,
+                coverageY: min(1, Double(bb.height) * 1.05),
+                symmetry: 0.75,
+                shoulderWaistRatio: 1.35,
+                waistShoulderRatio: 0.85,
+                thighHipRatio: 1.0,
+                torsoAspect: 1.4,
+                limbSymmetry: 0.85,
+                shoulderTiltDeg: 0,
+                issues: coverage < 0.05 ? ["Move closer so more of your body is in frame"] : [],
+                detectionSource: .humanRect
+            )
+        }
+
+        // 2) Person segmentation mask coverage (people are present even if pose failed).
+        if let s = seg {
+            let pb = s.pixelBuffer
+            let cov = maskCoverage(pb)
+            if cov > 0.02 {
+                return PoseResult(
+                    landmarks: [:],
+                    confidenceAverage: min(1, 0.4 + cov),
+                    brightness: bright,
+                    centeringX: 0.5,
+                    coverageY: min(1, cov * 1.6),
+                    symmetry: 0.7,
+                    shoulderWaistRatio: 1.3,
+                    waistShoulderRatio: 0.85,
+                    thighHipRatio: 1.0,
+                    torsoAspect: 1.4,
+                    limbSymmetry: 0.85,
+                    shoulderTiltDeg: 0,
+                    issues: [],
+                    detectionSource: .personMask
+                )
+            }
+        }
+
+        // 3) Brightness-only: image is readable but no body signal.
+        let usable = bright > 0.04 && bright < 0.99
+        return PoseResult(
             landmarks: [:],
-            confidenceAverage: 0,
-            brightness: brightness(cg: cg),
+            confidenceAverage: usable ? 0.25 : 0,
+            brightness: bright,
             centeringX: 0.5,
             coverageY: 0,
             symmetry: 0.5,
@@ -426,8 +496,33 @@ nonisolated struct PoseService {
             torsoAspect: 1.4,
             limbSymmetry: 0.9,
             shoulderTiltDeg: 0,
-            issues: ["Body not detected"]
+            issues: usable ? ["We couldn't see a body clearly — try a wider angle"] : ["Photo couldn't be read"],
+            detectionSource: usable ? .brightness : .none
         )
+    }
+
+    private func maskCoverage(_ pb: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        let w = CVPixelBufferGetWidth(pb)
+        let h = CVPixelBufferGetHeight(pb)
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return 0 }
+        let ptr = base.assumingMemoryBound(to: UInt8.self)
+        // Sample on an 80x80 grid for speed.
+        let step = max(1, min(w, h) / 80)
+        var hit = 0, total = 0
+        var y = 0
+        while y < h {
+            var x = 0
+            while x < w {
+                if ptr[y * bpr + x] > 64 { hit += 1 }
+                total += 1
+                x += step
+            }
+            y += step
+        }
+        return total > 0 ? Double(hit) / Double(total) : 0
     }
 
     private func brightness(cg: CGImage) -> Double {

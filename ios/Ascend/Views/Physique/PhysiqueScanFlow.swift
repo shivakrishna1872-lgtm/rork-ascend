@@ -43,6 +43,7 @@ struct PhysiqueScanFlow: View {
     @State private var result: PhysiqueScanRecord?
     @State private var pickerItem: PhotosPickerItem?
     @State private var captureBuffer: UIImage?
+    @State private var adjustingImage: UIImage?
     @State private var errorMsg: String?
     @State private var showCamera = false
     @State private var showCameraUnavailable = false
@@ -70,7 +71,7 @@ struct PhysiqueScanFlow: View {
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self),
                    let img = UIImage(data: data) {
-                    await applyImage(img)
+                    await MainActor.run { adjustingImage = img }
                 }
                 pickerItem = nil
             }
@@ -79,9 +80,24 @@ struct PhysiqueScanFlow: View {
             CameraSheet(
                 onCapture: { img in
                     showCamera = false
-                    Task { await applyImage(img) }
+                    adjustingImage = img
                 },
                 onCancel: { showCamera = false }
+            )
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(item: Binding(
+            get: { adjustingImage.map { AdjustWrap(image: $0) } },
+            set: { adjustingImage = $0?.image }
+        )) { wrap in
+            PhotoAdjustView(
+                image: wrap.image,
+                angle: angle,
+                onCancel: { adjustingImage = nil },
+                onConfirm: { adjusted in
+                    adjustingImage = nil
+                    Task { await applyImage(adjusted) }
+                }
             )
             .ignoresSafeArea()
         }
@@ -512,10 +528,34 @@ struct PhysiqueScanFlow: View {
                 return max(35, 55 - (r - 0.90) * 200)
             }()
             let physiqueScore = det.pslScore  // 0..100, deterministic composite
-            // Confidence floor: with full Vision landmark coverage + navy-method anchors we
-            // already produce high-quality estimates — surface that to the user.
-            // Floors raised to 90% per product spec; clean detections push to 98%.
-            let bodyFatConfidence = min(98, max(90, det.confidence * 100 + 28))
+            // Realistic confidence: reflects actual detection quality.
+            // Blends per-photo detector strength, landmark coverage, and how
+            // many of the three angles produced a usable body signal. No floor
+            // — a poor scan shows a low score honestly.
+            let detectedFraction = Double(detectedPoses.count) / 3.0
+            // Source strength: pose joints > human rect > person mask > brightness.
+            let sourceStrength: Double = {
+                guard !detectedPoses.isEmpty else { return 0 }
+                let weights: [Double] = detectedPoses.map { p in
+                    switch p.detectionSource {
+                    case .pose: return 1.0
+                    case .humanRect: return 0.75
+                    case .personMask: return 0.6
+                    case .saliency: return 0.45
+                    case .brightness: return 0.25
+                    case .none: return 0
+                    }
+                }
+                return weights.reduce(0, +) / Double(weights.count)
+            }()
+            let coverageQuality = min(1, avgCov / 0.55)
+            let landmarkQuality = min(1, avgConfPose / 0.6)
+            let bodyFatConfidence = max(0, min(98,
+                (0.45 * sourceStrength +
+                 0.25 * landmarkQuality +
+                 0.20 * coverageQuality +
+                 0.10 * detectedFraction) * 100
+            ))
             let archetypeRaw: String = {
                 if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }
                 if conditioning > 75 { return Archetype.leanAthletic.rawValue }

@@ -486,6 +486,23 @@ struct PhysiqueScanFlow: View {
             // 2) Body confirmed → run the AI analysis anchored to detected on-device measurements.
             //    Compute aggregated pose anchors so the model can lean on them.
             let detectedPoses = poses.compactMap { $0 }
+
+            // === PARTIALITY (region-aware scoring) ================================
+            // Classify each pose's body completeness, then pick the worst across
+            // the 3 angles so missing limbs never inflate per-region scores.
+            let partialities = detectedPoses.map { BodyContinuity.partiality(pose: $0) }
+            let worstPartiality: BodyContinuity.Partiality = {
+                if partialities.contains(.missing) { return .missing }
+                if partialities.contains(.obstructed) { return .obstructed }
+                if partialities.contains(.upperOnly) { return .upperOnly }
+                if partialities.contains(.torsoOnly) { return .torsoOnly }
+                return .full
+            }()
+            let wShoulders = BodyContinuity.regionWeight(worstPartiality, region: .shoulders)
+            let wTorso = BodyContinuity.regionWeight(worstPartiality, region: .torso)
+            let wHips = BodyContinuity.regionWeight(worstPartiality, region: .hips)
+            let wLegs = BodyContinuity.regionWeight(worstPartiality, region: .legs)
+
             let avgSym = detectedPoses.isEmpty ? 0.5 : detectedPoses.map(\.symmetry).reduce(0, +) / Double(detectedPoses.count)
             let avgSW = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.shoulderWaistRatio).reduce(0, +) / Double(detectedPoses.count)
             // Waist/shoulder is most reliable from front + back views.
@@ -536,20 +553,42 @@ struct PhysiqueScanFlow: View {
             let vTaperRaw = max(0.9, min(1.9, anchors.shoulderWaistRatio))
             let vTaper = min(100, max(0, (vTaperRaw - 1.0) * 125))
             // Muscularity: deterministic blend of v-taper + thigh/hip + limb development.
-            let muscularity = min(100, max(0,
-                0.55 * vTaper +
-                0.25 * min(100, anchors.thighHipRatio * 70) +
-                0.20 * min(100, anchors.limbSymmetry * 100)
+            // Region-weighted — if legs aren't in frame, the thigh/hip contribution
+            // collapses honestly instead of being padded with a default.
+            let muscularityRaw = min(100, max(0,
+                0.55 * vTaper * wTorso +
+                0.25 * min(100, anchors.thighHipRatio * 70) * wLegs +
+                0.20 * min(100, anchors.limbSymmetry * 100) * wShoulders
             ))
+            // When a region zeroes out, redistribute weight to what we saw so the
+            // displayed score is still meaningful rather than artificially small.
+            let muscularityWeightSum = 0.55 * wTorso + 0.25 * wLegs + 0.20 * wShoulders
+            let muscularity = muscularityWeightSum > 0.01
+                ? muscularityRaw / muscularityWeightSum
+                : muscularityRaw
             // Conditioning correlates inversely with waist/shoulder ratio.
-            let conditioning: Double = {
+            let conditioningBase: Double = {
                 let r = anchors.waistShoulderRatio
                 if r < 0.76 { return 88 + (0.76 - r) * 80 }
                 if r < 0.82 { return 72 + (0.82 - r) * 270 }
                 if r < 0.90 { return 55 + (0.90 - r) * 215 }
                 return max(35, 55 - (r - 0.90) * 200)
             }()
-            let physiqueScore = det.pslScore  // 0..100, deterministic composite
+            // Conditioning relies on torso + hips visibility; obstruction pulls it down.
+            let conditioning = conditioningBase * (0.5 * wTorso + 0.5 * wHips) +
+                               conditioningBase * (1 - (0.5 * wTorso + 0.5 * wHips)) * 0.6
+            // Composite — deterministic score, then a controlled partiality penalty
+            // so a full-body scan and an upper-body-only scan don't claim parity.
+            let partialityPenalty: Double = {
+                switch worstPartiality {
+                case .full: return 1.0
+                case .torsoOnly: return 0.97
+                case .upperOnly: return 0.92
+                case .obstructed: return 0.88
+                case .missing: return 0.80
+                }
+            }()
+            let physiqueScore = det.pslScore * partialityPenalty  // 0..100
             // Realistic confidence: reflects actual detection quality.
             // Blends per-photo detector strength, landmark coverage, and how
             // many of the three angles produced a usable body signal. No floor
@@ -566,8 +605,41 @@ struct PhysiqueScanFlow: View {
                 ? 0
                 : continuityScores.reduce(0, +) / Double(continuityScores.count)
             let bodyFatConfidence = max(0, min(98,
-                (0.75 * avgContinuity + 0.25 * detectedFraction) * 100
+                (0.75 * avgContinuity + 0.25 * detectedFraction) * 100 * partialityPenalty
             ))
+
+            // === CONFIDENCE REASONS (transparency) ================================
+            // Build a plain-language list of *why* confidence isn't 100%. Shown
+            // verbatim in the UI — no marketing varnish.
+            var reasons: [String] = []
+            switch worstPartiality {
+            case .full: break
+            case .torsoOnly: reasons.append("Legs not visible in one or more photos.")
+            case .upperOnly: reasons.append("Only upper body visible — hip and leg metrics estimated.")
+            case .obstructed: reasons.append("Phone or object partially blocking the body.")
+            case .missing: reasons.append("Body landmarks were difficult to read.")
+            }
+            if detectedPoses.count < 3 {
+                reasons.append("\(3 - detectedPoses.count) of 3 angles couldn’t be analyzed.")
+            }
+            if avgContinuity < 0.5 && worstPartiality == .full {
+                reasons.append("Lighting or framing reduced detection quality.")
+            }
+            // Cross-pipeline consistency — if a recent face scan exists, check
+            // PSL vs Physique agreement. We *never* average; we only penalize
+            // confidence and surface the disagreement.
+            var isUncertaintyEvent = false
+            if let recentFace = (try? ctx.fetch(FetchDescriptor<FaceScanRecord>(sortBy: [SortDescriptor(\.date, order: .reverse)])))?.first,
+               Date.now.timeIntervalSince(recentFace.date) < 60 * 60 * 24 * 7 {
+                let report = CrossPipelineConsistency.check(
+                    pslScore: recentFace.overallScore,
+                    physiqueScore: physiqueScore
+                )
+                if report.isUncertaintyEvent {
+                    isUncertaintyEvent = true
+                    reasons.append(report.note)
+                }
+            }
             let archetypeRaw: String = {
                 if vTaper > 70 && conditioning > 70 { return Archetype.vTaper.rawValue }
                 if conditioning > 75 { return Archetype.leanAthletic.rawValue }
@@ -596,7 +668,10 @@ struct PhysiqueScanFlow: View {
                 engineVersion: EngineRegistry.Physique.current.rawValue,
                 calibrationVersion: calibration.version,
                 inputHash: EngineRegistry.hashPhysiqueAnchors(anchors),
-                inputPayload: ScanReplay.capture(anchors: anchors, calibration: calibration)
+                inputPayload: ScanReplay.capture(anchors: anchors, calibration: calibration),
+                confidenceReasons: reasons,
+                partialityRaw: worstPartiality.rawValue,
+                isUncertaintyEvent: isUncertaintyEvent
             )
             ctx.insert(record)
             try? ctx.save()

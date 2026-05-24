@@ -5,6 +5,7 @@ struct PhysiqueResultsView: View {
     let isHistory: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var revealStep: Int = 0
+    @State private var showDebug: Bool = false
 
     var body: some View {
         ZStack {
@@ -23,6 +24,10 @@ struct PhysiqueResultsView: View {
                         Spacer()
                         Text(record.date.formatted(date: .abbreviated, time: .omitted))
                             .font(.aetherCaption).foregroundStyle(Theme.textTertiary)
+                            .onLongPressGesture(minimumDuration: 0.6) {
+                                Haptics.medium()
+                                showDebug = true
+                            }
                         Spacer()
                         Color.clear.frame(width: 36, height: 36)
                     }
@@ -56,6 +61,11 @@ struct PhysiqueResultsView: View {
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
+                    if revealStep >= 5, !record.confidenceReasons.isEmpty || record.isUncertaintyEvent {
+                        confidenceReasonsCard
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
                     if revealStep >= 6 {
                         insightCard
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -73,6 +83,9 @@ struct PhysiqueResultsView: View {
             }
         }
         .scrollIndicators(.hidden)
+        .sheet(isPresented: $showDebug) {
+            ScanDebugView(record: record)
+        }
         .onAppear {
             if isHistory {
                 revealStep = 7
@@ -176,6 +189,47 @@ struct PhysiqueResultsView: View {
         }
         .padding(16)
         .glassCard(radius: 20)
+    }
+
+    private var confidenceReasonsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: record.isUncertaintyEvent ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(record.isUncertaintyEvent ? Theme.warn : Theme.accentGlow)
+                Text(record.isUncertaintyEvent ? "Uncertainty Event".uppercased() : "Why this confidence".uppercased())
+                    .font(.system(size: 10, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                if record.partialityRaw != "full" {
+                    Text(record.partialityRaw.uppercased())
+                        .font(.system(size: 9, weight: .bold)).tracking(1.2)
+                        .foregroundStyle(Theme.warn)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.warn.opacity(0.15)))
+                        .overlay(Capsule().strokeBorder(Theme.warn.opacity(0.5), lineWidth: 0.5))
+                }
+            }
+            ForEach(record.confidenceReasons, id: \.self) { reason in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle().fill(Theme.warn.opacity(0.7)).frame(width: 4, height: 4)
+                        .padding(.top, 7)
+                    Text(reason)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+            if record.confidenceReasons.isEmpty && record.isUncertaintyEvent {
+                Text("Cross-check between PSL and Physique disagreed — confidence reduced.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(radius: 16)
     }
 
     private var confidenceColor: Color {

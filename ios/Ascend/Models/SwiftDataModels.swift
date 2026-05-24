@@ -192,6 +192,17 @@ final class PhysiqueScanRecord {
     /// Self-contained replay payload (JSON) — re-running through the same
     /// engine version produces identical numbers. See `ScanReplay`.
     var inputPayload: String = ""
+    /// Human-readable reasons the displayed confidence isn't 100%.
+    /// e.g. "Legs not visible", "Low lighting", "PSL/Physique disagree".
+    /// Always honest — shown in the UI so users understand what the
+    /// detector actually saw. Empty array = clean, high-confidence scan.
+    var confidenceReasons: [String] = []
+    /// Worst-case `BodyContinuity.Partiality` across all 3 angles, as a
+    /// raw string. Drives per-region scoring + UI badge. Default "full".
+    var partialityRaw: String = "full"
+    /// True when the cross-pipeline check (PSL ↔ Physique) flagged a
+    /// divergence. UI renders an uncertainty badge.
+    var isUncertaintyEvent: Bool = false
 
     init(
         date: Date = .now,
@@ -211,7 +222,10 @@ final class PhysiqueScanRecord {
         engineVersion: String = EngineRegistry.Physique.current.rawValue,
         calibrationVersion: String = "calibration_v1",
         inputHash: String = "",
-        inputPayload: String = ""
+        inputPayload: String = "",
+        confidenceReasons: [String] = [],
+        partialityRaw: String = "full",
+        isUncertaintyEvent: Bool = false
     ) {
         self.date = date
         self.physiqueScore = physiqueScore
@@ -231,6 +245,9 @@ final class PhysiqueScanRecord {
         self.calibrationVersion = calibrationVersion
         self.inputHash = inputHash
         self.inputPayload = inputPayload
+        self.confidenceReasons = confidenceReasons
+        self.partialityRaw = partialityRaw
+        self.isUncertaintyEvent = isUncertaintyEvent
     }
 
     var archetype: Archetype { Archetype(rawValue: archetypeRaw) ?? .balanced }

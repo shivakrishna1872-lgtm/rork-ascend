@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct PhysiqueResultsView: View {
     let record: PhysiqueScanRecord
@@ -6,6 +7,19 @@ struct PhysiqueResultsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var revealStep: Int = 0
     @State private var showDebug: Bool = false
+    @Query private var profiles: [UserProfile]
+
+    /// Advisory cross-check against ACE/Navy/Jackson-Pollock reference data.
+    /// Never overrides the deterministic record — purely additive context.
+    private var validation: FitnessValidationLayer.Report {
+        let isFemale = profiles.first?.sex == .female
+        return FitnessValidationLayer.report(
+            physiqueScore: record.physiqueScore,
+            bodyFatPercent: record.bodyFatPercent,
+            confidence0to100: record.bodyFatConfidence,
+            isFemale: isFemale
+        )
+    }
 
     var body: some View {
         ZStack {
@@ -58,6 +72,11 @@ struct PhysiqueResultsView: View {
 
                     if revealStep >= 5 {
                         bodyFatCard
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
+                    if revealStep >= 5 && record.physiqueScore > 0 {
+                        validationCard
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
@@ -189,6 +208,86 @@ struct PhysiqueResultsView: View {
         }
         .padding(16)
         .glassCard(radius: 20)
+    }
+
+    // MARK: - Validation card (ACE / Navy / tier cross-check, advisory only)
+
+    private var validationCard: some View {
+        let v = validation
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(v.isConsistent ? Theme.good : Theme.warn)
+                Text("Reference Check".uppercased())
+                    .font(.system(size: 10, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text(v.tier.label.uppercased())
+                    .font(.system(size: 9, weight: .bold)).tracking(1.2)
+                    .foregroundStyle(Theme.accentGlow)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(Theme.accentGlow.opacity(0.15)))
+                    .overlay(Capsule().strokeBorder(Theme.accentGlow.opacity(0.5), lineWidth: 0.5))
+            }
+
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("BODY FAT RANGE")
+                        .font(.system(size: 9, weight: .semibold)).tracking(1.3)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(v.bodyFatRangeText)
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text(v.confidenceText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("ACE BAND")
+                        .font(.system(size: 9, weight: .semibold)).tracking(1.3)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(v.aceCategory.label)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("reference standard")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+
+            Divider().background(Theme.line.opacity(0.5))
+
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "text.bubble.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.accentGlow)
+                    .padding(.top, 2)
+                Text(v.coachInsight)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+
+            if !v.advisories.isEmpty {
+                ForEach(v.advisories, id: \.self) { note in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle().fill(Theme.warn.opacity(0.7)).frame(width: 4, height: 4)
+                            .padding(.top, 7)
+                        Text(note)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(radius: 16)
     }
 
     private var confidenceReasonsCard: some View {

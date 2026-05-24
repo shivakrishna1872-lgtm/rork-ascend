@@ -16,6 +16,7 @@ struct ProfileView: View {
     @State private var showDeleteConfirm: Bool = false
     @State private var deleting: Bool = false
     @State private var consent = AIConsentService.shared
+    @State private var showDebug: Bool = false
 
     var body: some View {
         ZStack {
@@ -40,6 +41,7 @@ struct ProfileView: View {
             .safeAreaPadding(.bottom, 40)
         }
         .task { await refreshNotifStatus() }
+        .sheet(isPresented: $showDebug) { RegressionDebugView() }
         .alert("Delete Account?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) { performDelete() }
@@ -293,6 +295,11 @@ struct ProfileView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 1.2) {
+            Haptics.success()
+            showDebug = true
+        }
     }
 
     private var statsCard: some View {

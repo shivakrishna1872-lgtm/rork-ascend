@@ -76,13 +76,16 @@ nonisolated enum CoachReplyCache {
 nonisolated enum CoachGuard {
     private static let allowedTools: Set<String> = [
         "setCalorieTarget", "setProteinTarget", "updateProfile",
-        "logMeal", "removeLastMeal", "logLifts",
-        "addHydration", "openTab", "generatePlan", "importWorkoutPlan"
+        "logMeal", "removeLastMeal", "clearTodayMeals",
+        "logLifts", "setLifts",
+        "addHydration", "clearHydration",
+        "openTab", "generatePlan", "importWorkoutPlan",
+        "setExerciseWeight", "deletePlan", "setStreak"
     ]
     private static let allowedGoals: Set<String> = [
         "loseFat", "gainMuscle", "aesthetics", "athletic", "discipline", "transformation"
     ]
-    private static let allowedTabs: Set<String> = ["cal", "physique", "psl"]
+    private static let allowedTabs: Set<String> = ["cal", "physique", "psl", "home", "circles", "ai", "coach", "workouts"]
     private static let allowedUnits: Set<String> = ["metric", "imperial"]
     private static let maxReplyChars = 1200
 
@@ -122,18 +125,25 @@ nonisolated enum CoachGuard {
         // Clamp every numeric/string field to safe ranges. Out-of-range stays
         // nil rather than being silently corrected to a default, so the app
         // never applies a value the model made up.
-        if let c = a.calories { a.calories = (1200...5000).contains(c) ? c : nil }
-        if let p = a.proteinG { a.proteinG = (40...400).contains(p) ? p : nil }
+        if let c = a.calories { a.calories = (800...6000).contains(c) ? c : nil }
+        if let p = a.proteinG { a.proteinG = (30...500).contains(p) ? p : nil }
         if let c = a.carbsG   { a.carbsG   = (0...800).contains(c)  ? c : nil }
         if let f = a.fatsG    { a.fatsG    = (0...400).contains(f)  ? f : nil }
-        if let d = a.days     { a.days     = (1...14).contains(d)   ? d : nil }
-        if let w = a.weightKg { a.weightKg = (30...300).contains(w) ? w : nil }
+        if let d = a.days     { a.days     = (1...60).contains(d)   ? d : nil }
+        // updateProfile.weightKg shares the field with setExerciseWeight, so
+        // we use a permissive band (1–700) and let the runner pick the right
+        // sub-range for each tool. Pure setting on UserProfile is still
+        // re-checked there.
+        if let w = a.weightKg { a.weightKg = (1...700).contains(w) ? w : nil }
         if let h = a.heightCm { a.heightCm = (120...230).contains(h) ? h : nil }
         if let age = a.age    { a.age      = (13...100).contains(age) ? age : nil }
         if let g = a.glasses  { a.glasses  = (1...8).contains(g)    ? g : nil }
-        if let b = a.benchKg  { a.benchKg  = (10...500).contains(b) ? b : nil }
-        if let s = a.squatKg  { a.squatKg  = (10...600).contains(s) ? s : nil }
-        if let d = a.deadliftKg { a.deadliftKg = (10...600).contains(d) ? d : nil }
+        if let b = a.benchKg  { a.benchKg  = (1...600).contains(b) ? b : nil }
+        if let s = a.squatKg  { a.squatKg  = (1...700).contains(s) ? s : nil }
+        if let d = a.deadliftKg { a.deadliftKg = (1...700).contains(d) ? d : nil }
+        if let s = a.streak   { a.streak   = (0...3650).contains(s) ? s : nil }
+        if let n = a.exerciseName, n.count > 60 { a.exerciseName = String(n.prefix(60)) }
+        if let t = a.planTitle, t.count > 80 { a.planTitle = String(t.prefix(80)) }
         if let goals = a.goals {
             let filtered = goals.filter { allowedGoals.contains($0) }
             a.goals = filtered.isEmpty ? nil : Array(Set(filtered))

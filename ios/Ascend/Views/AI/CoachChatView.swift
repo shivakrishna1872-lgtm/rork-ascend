@@ -15,6 +15,7 @@ struct CoachChatView: View {
     @Query(sort: \MealEntry.date, order: .reverse) private var meals: [MealEntry]
     @Query(sort: \LiftEntry.date, order: .reverse) private var lifts: [LiftEntry]
     @Query(sort: \SetLog.date, order: .reverse) private var setLogs: [SetLog]
+    @Query(sort: \WorkoutPlan.updatedAt, order: .reverse) private var plans: [WorkoutPlan]
 
     @State private var messages: [ChatMessage] = []
     @State private var input: String = ""
@@ -498,8 +499,14 @@ struct CoachChatView: View {
         case "updateProfile":    return "PROFILE UPDATE"
         case "logMeal":          return "LOG MEAL"
         case "removeLastMeal":   return "REMOVE MEAL"
+        case "clearTodayMeals":  return "CLEAR TODAY"
         case "logLifts":         return "LOG LIFTS"
+        case "setLifts":         return "SET LIFTS"
+        case "setExerciseWeight": return "UPDATE WEIGHT"
         case "addHydration":     return "HYDRATION"
+        case "clearHydration":   return "RESET WATER"
+        case "setStreak":        return "STREAK"
+        case "deletePlan":       return "DELETE PLAN"
         case "openTab":          return "OPEN"
         case "generatePlan":     return "WEEK PLAN"
         case "importWorkoutPlan": return "IMPORT WORKOUT"
@@ -732,7 +739,7 @@ struct CoachChatView: View {
     // MARK: - Actions
 
     private func applyAction(_ messageId: UUID, action: CoachToolCall, manual: Bool) {
-        let result = CoachActionRunner.apply(action: action, user: user, ctx: ctx, meals: meals, lifts: lifts)
+        let result = CoachActionRunner.apply(action: action, user: user, ctx: ctx, meals: meals, lifts: lifts, plans: plans)
         if let idx = messages.firstIndex(where: { $0.id == messageId }) {
             switch result {
             case .applied:
@@ -741,6 +748,16 @@ struct CoachChatView: View {
             case .failed(let r):
                 messages[idx].actionState = .failed(r)
                 Haptics.warning()
+                // Surface the failure inline so the user actually sees WHY the
+                // action didn’t apply instead of just a small red chip.
+                let note = ChatMessage(
+                    kind: .assistant,
+                    text: "I couldn't apply that — \(r). Want me to try a different value?",
+                    isOffline: false
+                )
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                    messages.append(note)
+                }
             }
         }
     }
@@ -751,7 +768,7 @@ struct CoachChatView: View {
     }
 
     private func undoAction(_ messageId: UUID, action: CoachToolCall) {
-        CoachActionRunner.undo(action: action, user: user, ctx: ctx, meals: meals, lifts: lifts)
+        CoachActionRunner.undo(action: action, user: user, ctx: ctx, meals: meals, lifts: lifts, plans: plans)
         if let idx = messages.firstIndex(where: { $0.id == messageId }) {
             messages[idx].actionState = .undone
         }
@@ -873,8 +890,14 @@ enum CoachActionStyle {
         case "updateProfile":    return "person.crop.circle.badge.checkmark"
         case "logMeal":          return "fork.knife.circle.fill"
         case "removeLastMeal":   return "trash.fill"
+        case "clearTodayMeals":  return "trash.slash.fill"
         case "logLifts":         return "dumbbell.fill"
+        case "setLifts":         return "dumbbell.fill"
+        case "setExerciseWeight": return "scalemass.fill"
         case "addHydration":     return "drop.fill"
+        case "clearHydration":   return "drop.degreesign.slash.fill"
+        case "setStreak":        return "flame"
+        case "deletePlan":       return "trash.fill"
         case "openTab":          return "arrow.up.right.square.fill"
         case "generatePlan":     return "list.bullet.rectangle.fill"
         case "importWorkoutPlan": return "square.and.arrow.down.fill"
@@ -884,18 +907,21 @@ enum CoachActionStyle {
     static func tint(for tool: String) -> Color {
         switch tool {
         case "setCalorieTarget", "setProteinTarget", "updateProfile": return Theme.accentGlow
-        case "logMeal", "removeLastMeal":   return Theme.warn
-        case "logLifts":                    return Theme.good
-        case "addHydration":                return Theme.accent
-        case "openTab":                     return Theme.accentGlow
-        case "generatePlan":                return Theme.gold
-        case "importWorkoutPlan":           return Theme.good
-        default:                            return Theme.accent
+        case "logMeal", "removeLastMeal", "clearTodayMeals": return Theme.warn
+        case "logLifts", "setLifts", "setExerciseWeight":   return Theme.good
+        case "addHydration", "clearHydration":              return Theme.accent
+        case "setStreak":                                    return Theme.gold
+        case "deletePlan":                                   return Theme.bad
+        case "openTab":                                      return Theme.accentGlow
+        case "generatePlan":                                 return Theme.gold
+        case "importWorkoutPlan":                            return Theme.good
+        default:                                             return Theme.accent
         }
     }
     static func needsConfirm(_ tool: String) -> Bool {
         switch tool {
-        case "setCalorieTarget", "setProteinTarget", "updateProfile", "removeLastMeal":
+        case "setCalorieTarget", "setProteinTarget", "updateProfile",
+             "removeLastMeal", "clearTodayMeals", "deletePlan", "setStreak":
             return true
         default:
             return false
@@ -903,7 +929,8 @@ enum CoachActionStyle {
     }
     static func supportsUndo(_ tool: String) -> Bool {
         switch tool {
-        case "addHydration", "logMeal", "logLifts", "openTab", "generatePlan", "importWorkoutPlan":
+        case "addHydration", "logMeal", "logLifts", "setLifts",
+             "openTab", "generatePlan", "importWorkoutPlan":
             return true
         default:
             return false

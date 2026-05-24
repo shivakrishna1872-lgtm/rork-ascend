@@ -16,24 +16,25 @@ enum CoachActionRunner {
                       user: UserProfile,
                       ctx: ModelContext,
                       meals: [MealEntry],
-                      lifts: [LiftEntry]) -> Outcome {
+                      lifts: [LiftEntry],
+                      plans: [WorkoutPlan] = []) -> Outcome {
         let a = action.args
         switch action.tool {
         case "setCalorieTarget":
-            guard let cals = a.calories, (1200...5000).contains(cals) else {
+            guard let cals = a.calories, (800...6000).contains(cals) else {
                 return .failed("invalid calories")
             }
-            let days = max(1, min(14, a.days ?? 1))
+            let days = max(1, min(60, a.days ?? 7))
             user.calorieOverrideValue = cals
             user.calorieOverrideUntil = Calendar.current.date(byAdding: .day, value: days, to: .now)
             try? ctx.save()
             return .applied
 
         case "setProteinTarget":
-            guard let g = a.proteinG, (40...400).contains(g) else {
+            guard let g = a.proteinG, (30...500).contains(g) else {
                 return .failed("invalid protein")
             }
-            let days = max(1, min(14, a.days ?? 1))
+            let days = max(1, min(60, a.days ?? 7))
             user.proteinOverrideValue = g
             user.proteinOverrideUntil = Calendar.current.date(byAdding: .day, value: days, to: .now)
             try? ctx.save()
@@ -95,13 +96,88 @@ enum CoachActionRunner {
             try? ctx.save()
             return .applied
 
-        case "logLifts":
-            let bench = max(0, min(500, a.benchKg ?? 0))
-            let squat = max(0, min(500, a.squatKg ?? 0))
-            let dead  = max(0, min(500, a.deadliftKg ?? 0))
+        case "logLifts", "setLifts":
+            // Both tools insert a new LiftEntry — the latest row is treated as
+            // "current" by the rest of the app, so setLifts is just a clearer
+            // user-facing alias for "my bench is now X".
+            let bench = max(0, min(600, a.benchKg ?? 0))
+            let squat = max(0, min(700, a.squatKg ?? 0))
+            let dead  = max(0, min(700, a.deadliftKg ?? 0))
             guard bench + squat + dead > 0 else { return .failed("no lifts provided") }
-            let entry = LiftEntry(date: .now, benchKg: bench, squatKg: squat, deadliftKg: dead, note: "Logged by coach")
+            let note = action.tool == "setLifts" ? "Set by coach" : "Logged by coach"
+            let entry = LiftEntry(date: .now, benchKg: bench, squatKg: squat, deadliftKg: dead, note: note)
             ctx.insert(entry)
+            try? ctx.save()
+            return .applied
+
+        case "clearHydration":
+            user.hydrationDate = .now
+            user.hydrationGlasses = 0
+            try? ctx.save()
+            return .applied
+
+        case "clearTodayMeals":
+            let cal = Calendar.current
+            let today = meals.filter { cal.isDateInToday($0.date) }
+            guard !today.isEmpty else { return .failed("no meals today") }
+            for m in today { ctx.delete(m) }
+            try? ctx.save()
+            return .applied
+
+        case "setStreak":
+            guard let s = a.streak, (0...3650).contains(s) else { return .failed("invalid streak") }
+            user.streak = s
+            try? ctx.save()
+            return .applied
+
+        case "setExerciseWeight":
+            // Updates the `notes` of every matching exercise across the user's
+            // active workout plans with a fresh "working weight" tag. Lets the
+            // user say "change my bench to 125" and have it stick on the plan.
+            guard let raw = a.exerciseName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !raw.isEmpty,
+                  let weight = a.weightKg, (1...700).contains(weight)
+            else { return .failed("missing exercise or weight") }
+            let unit = (a.unitSystem?.lowercased() == "imperial") ? "lb" : "kg"
+            let display = unit == "lb" ? Int(weight * 2.2046226218) : Int(weight)
+            var touched = 0
+            for plan in plans {
+                for day in plan.days {
+                    for ex in day.exercises where ex.name.lowercased().contains(raw) || raw.contains(ex.name.lowercased()) {
+                        // Strip any existing "@ NNNkg" or "@ NNNlb" tag, then append fresh.
+                        let stripped = ex.notes.replacingOccurrences(
+                            of: #"@\s*\d+\s*(kg|lb)"#,
+                            with: "",
+                            options: .regularExpression
+                        ).trimmingCharacters(in: .whitespacesAndNewlines)
+                        let tag = "@ \(display)\(unit)"
+                        ex.notes = stripped.isEmpty ? tag : "\(stripped) \(tag)"
+                        touched += 1
+                    }
+                }
+                if touched > 0 { plan.updatedAt = .now }
+            }
+            guard touched > 0 else { return .failed("exercise not found in your plans") }
+            // Also log a lift entry so the "current bench/squat/deadlift" cards
+            // update if the user named one of the big three.
+            let lower = raw
+            var b = 0.0, s = 0.0, d = 0.0
+            if lower.contains("bench") { b = weight }
+            else if lower.contains("squat") { s = weight }
+            else if lower.contains("dead") { d = weight }
+            if b + s + d > 0 {
+                ctx.insert(LiftEntry(date: .now, benchKg: b, squatKg: s, deadliftKg: d, note: "Set by coach"))
+            }
+            try? ctx.save()
+            return .applied
+
+        case "deletePlan":
+            guard let title = a.planTitle?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !title.isEmpty
+            else { return .failed("missing plan title") }
+            let match = plans.first { $0.title.lowercased().contains(title) || title.contains($0.title.lowercased()) }
+            guard let plan = match else { return .failed("plan not found") }
+            ctx.delete(plan)
             try? ctx.save()
             return .applied
 
@@ -126,6 +202,7 @@ enum CoachActionRunner {
                 case "psl", "face": return .psl
                 case "home", "dashboard": return .home
                 case "circles", "social": return .circles
+                case "workouts", "workout", "plan", "coach", "ai": return .ai
                 default: return nil
                 }
             }()
@@ -188,7 +265,8 @@ enum CoachActionRunner {
                      user: UserProfile,
                      ctx: ModelContext,
                      meals: [MealEntry],
-                     lifts: [LiftEntry]) {
+                     lifts: [LiftEntry],
+                     plans: [WorkoutPlan] = []) {
         let a = action.args
         switch action.tool {
         case "addHydration":
@@ -200,7 +278,7 @@ enum CoachActionRunner {
             if let m = meals.first {
                 ctx.delete(m); try? ctx.save()
             }
-        case "logLifts":
+        case "logLifts", "setLifts":
             if let l = lifts.first {
                 ctx.delete(l); try? ctx.save()
             }

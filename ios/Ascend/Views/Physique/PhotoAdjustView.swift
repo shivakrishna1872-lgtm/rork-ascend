@@ -86,7 +86,7 @@ struct PhotoAdjustView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.top, 56)
         .padding(.bottom, 12)
     }
 

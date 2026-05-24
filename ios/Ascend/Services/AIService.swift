@@ -1654,8 +1654,32 @@ nonisolated struct CoachToolArgs: Codable {
     var deadliftKg: Double?
     var tab: String?
     var planText: String?
+    /// JSON-encoded `ImportedWorkoutPlan` carrying a deterministically OCR-parsed
+    /// workout (days + exercises). Filled in on-device by the chat view before
+    /// the action is shown — the AI never produces this payload.
+    var workoutPlanJSON: String?
 
     init() {}
+}
+
+/// Wire shape for a coach `importWorkoutPlan` action. Mirrors the editable
+/// `WorkoutPlan`/`WorkoutDay`/`WorkoutExercise` SwiftData models so the runner
+/// can rebuild them verbatim. Produced ONLY by on-device OCR; never by the AI.
+nonisolated struct ImportedWorkoutPlan: Codable, Sendable {
+    nonisolated struct Exercise: Codable, Sendable {
+        var name: String
+        var sets: Int
+        var reps: String
+        var restSeconds: Int
+        var notes: String
+    }
+    nonisolated struct Day: Codable, Sendable {
+        var title: String
+        var focus: String
+        var exercises: [Exercise]
+    }
+    var title: String
+    var days: [Day]
 }
 
 nonisolated enum CoachPrompts {

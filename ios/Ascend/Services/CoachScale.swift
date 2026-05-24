@@ -77,7 +77,7 @@ nonisolated enum CoachGuard {
     private static let allowedTools: Set<String> = [
         "setCalorieTarget", "setProteinTarget", "updateProfile",
         "logMeal", "removeLastMeal", "logLifts",
-        "addHydration", "openTab", "generatePlan"
+        "addHydration", "openTab", "generatePlan", "importWorkoutPlan"
     ]
     private static let allowedGoals: Set<String> = [
         "loseFat", "gainMuscle", "aesthetics", "athletic", "discipline", "transformation"
@@ -149,6 +149,11 @@ nonisolated enum CoachGuard {
         }
         if let plan = a.planText, plan.count > 1500 {
             a.planText = String(plan.prefix(1500))
+        }
+        // Hard cap workout-plan JSON so a malformed payload can't bloat the
+        // chat log. 32k is plenty for ~6 days x 12 exercises.
+        if let wp = a.workoutPlanJSON, wp.count > 32_000 {
+            a.workoutPlanJSON = nil
         }
         let summary = call.summary.count > 160
             ? String(call.summary.prefix(160))

@@ -138,6 +138,45 @@ enum CoachActionRunner {
             guard let t = a.planText, !t.isEmpty else { return .failed("empty plan") }
             return .applied
 
+        case "importWorkoutPlan":
+            guard let json = a.workoutPlanJSON,
+                  let data = json.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(ImportedWorkoutPlan.self, from: data)
+            else { return .failed("empty plan") }
+            let nonEmpty = parsed.days.filter { !$0.exercises.isEmpty }
+            guard !nonEmpty.isEmpty else { return .failed("no exercises") }
+
+            let title = parsed.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let plan = WorkoutPlan(
+                title: title.isEmpty ? "Scanned Plan" : title,
+                goalRaw: WorkoutGoal.hypertrophy.rawValue,
+                sourceRaw: WorkoutSource.scanned.rawValue
+            )
+            ctx.insert(plan)
+            for (dIdx, day) in parsed.days.enumerated() {
+                let d = WorkoutDay(
+                    orderIndex: dIdx,
+                    dayTitle: day.title.isEmpty ? "Day \(dIdx + 1)" : day.title,
+                    focus: day.focus
+                )
+                d.plan = plan
+                ctx.insert(d)
+                for (eIdx, ex) in day.exercises.enumerated() {
+                    let w = WorkoutExercise(
+                        orderIndex: eIdx,
+                        name: ex.name,
+                        sets: max(1, min(20, ex.sets)),
+                        reps: ex.reps,
+                        restSeconds: max(0, min(600, ex.restSeconds)),
+                        notes: ex.notes
+                    )
+                    w.day = d
+                    ctx.insert(w)
+                }
+            }
+            try? ctx.save()
+            return .applied
+
         default:
             return .failed("unsupported action")
         }
@@ -167,6 +206,24 @@ enum CoachActionRunner {
             }
         case "openTab", "generatePlan":
             break // no-op, UI marks as undone
+        case "importWorkoutPlan":
+            // Remove the most recently inserted scanned plan whose title matches.
+            guard let json = a.workoutPlanJSON,
+                  let data = json.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(ImportedWorkoutPlan.self, from: data)
+            else { break }
+            let title = parsed.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let descriptor = FetchDescriptor<WorkoutPlan>()
+            if let plans = try? ctx.fetch(descriptor) {
+                let match = plans
+                    .filter { $0.sourceRaw == WorkoutSource.scanned.rawValue && $0.title == title }
+                    .sorted { $0.createdAt > $1.createdAt }
+                    .first
+                if let m = match {
+                    ctx.delete(m)
+                    try? ctx.save()
+                }
+            }
         default:
             break
         }

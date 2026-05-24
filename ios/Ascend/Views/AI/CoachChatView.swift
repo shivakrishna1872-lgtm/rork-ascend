@@ -502,6 +502,7 @@ struct CoachChatView: View {
         case "addHydration":     return "HYDRATION"
         case "openTab":          return "OPEN"
         case "generatePlan":     return "WEEK PLAN"
+        case "importWorkoutPlan": return "IMPORT WORKOUT"
         default:                 return "ACTION"
         }
     }
@@ -579,6 +580,53 @@ struct CoachChatView: View {
 
     // MARK: - Sending
 
+    /// Run deterministic OCR on each attached image and, for any that parse
+    /// into a workout, append an importWorkoutPlan action card. Auto-applied
+    /// so the plan immediately shows up in the Workouts hub.
+    private func tryImportWorkoutFromImages(_ imgs: [UIImage]) async {
+        for img in imgs {
+            guard let parsed = try? await WorkoutOCRService.recognize(image: img) else { continue }
+            let nonEmptyDays = parsed.days.filter { !$0.exercises.isEmpty }
+            let totalExercises = nonEmptyDays.reduce(0) { $0 + $1.exercises.count }
+            guard totalExercises >= 1 else { continue }
+
+            let imported = ImportedWorkoutPlan(
+                title: parsed.title,
+                days: nonEmptyDays.map { d in
+                    ImportedWorkoutPlan.Day(
+                        title: d.title,
+                        focus: d.focus,
+                        exercises: d.exercises.map { e in
+                            ImportedWorkoutPlan.Exercise(
+                                name: e.name,
+                                sets: e.sets,
+                                reps: e.reps,
+                                restSeconds: e.restSeconds,
+                                notes: e.notes
+                            )
+                        }
+                    )
+                }
+            )
+            guard let data = try? JSONEncoder().encode(imported),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+
+            var args = CoachToolArgs()
+            args.workoutPlanJSON = json
+            let dayCount = nonEmptyDays.count
+            let summary = "Import “\(imported.title)” — \(dayCount) day\(dayCount == 1 ? "" : "s"), \(totalExercises) exercise\(totalExercises == 1 ? "" : "s")"
+            let call = CoachToolCall(tool: "importWorkoutPlan", summary: summary, args: args)
+
+            await MainActor.run {
+                let msg = ChatMessage(kind: .action(call, call.id), text: "")
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                    messages.append(msg)
+                }
+                applyAction(msg.id, action: call, manual: false)
+            }
+        }
+    }
+
     @MainActor
     private func loadPickedImages(_ items: [PhotosPickerItem]) async {
         var loaded: [UIImage] = []
@@ -606,6 +654,15 @@ struct CoachChatView: View {
             pendingImages = []
             sending = true
             typingShown = true
+        }
+
+        // If the user attached photos, try on-device OCR FIRST. If any image
+        // parses into a real workout (one or more exercises detected), surface
+        // an importWorkoutPlan action card and auto-apply it so the plan lands
+        // in their Workouts hub immediately. Deterministic; AI is never asked
+        // to invent the plan.
+        if !imgs.isEmpty {
+            await tryImportWorkoutFromImages(imgs)
         }
 
         // Build history (text + last attachment carries images)
@@ -820,6 +877,7 @@ enum CoachActionStyle {
         case "addHydration":     return "drop.fill"
         case "openTab":          return "arrow.up.right.square.fill"
         case "generatePlan":     return "list.bullet.rectangle.fill"
+        case "importWorkoutPlan": return "square.and.arrow.down.fill"
         default:                 return "sparkles"
         }
     }
@@ -831,6 +889,7 @@ enum CoachActionStyle {
         case "addHydration":                return Theme.accent
         case "openTab":                     return Theme.accentGlow
         case "generatePlan":                return Theme.gold
+        case "importWorkoutPlan":           return Theme.good
         default:                            return Theme.accent
         }
     }
@@ -844,7 +903,7 @@ enum CoachActionStyle {
     }
     static func supportsUndo(_ tool: String) -> Bool {
         switch tool {
-        case "addHydration", "logMeal", "logLifts", "openTab", "generatePlan":
+        case "addHydration", "logMeal", "logLifts", "openTab", "generatePlan", "importWorkoutPlan":
             return true
         default:
             return false

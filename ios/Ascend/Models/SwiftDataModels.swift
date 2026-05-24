@@ -553,6 +553,9 @@ final class FaceScanRecord {
     /// Self-contained replay payload (JSON) — re-running through the same
     /// engine version produces identical numbers. See `ScanReplay`.
     var inputPayload: String = ""
+    /// Deterministic confidence in 0...100. Reflects landmark quality, sample
+    /// count, and cross-photo stability — never inflated by AI enrichment.
+    var confidence: Double = 0
 
     init(
         date: Date = .now,
@@ -570,7 +573,8 @@ final class FaceScanRecord {
         engineVersion: String = EngineRegistry.PSL.current.rawValue,
         calibrationVersion: String = "calibration_v1",
         inputHash: String = "",
-        inputPayload: String = ""
+        inputPayload: String = "",
+        confidence: Double = 0
     ) {
         self.date = date
         self.overallScore = overallScore
@@ -588,6 +592,7 @@ final class FaceScanRecord {
         self.calibrationVersion = calibrationVersion
         self.inputHash = inputHash
         self.inputPayload = inputPayload
+        self.confidence = confidence
     }
 }
 

@@ -670,7 +670,8 @@ struct FaceScanSheet: View {
                 engineVersion: EngineRegistry.PSL.current.rawValue,
                 calibrationVersion: calibration.version,
                 inputHash: averaged.map { EngineRegistry.hashFaceMeasurements($0, sampleCount: samples.count) } ?? "",
-                inputPayload: replayPayload
+                inputPayload: replayPayload,
+                confidence: round(det.confidence * 100)
             )
             ctx.insert(record)
             app.bumpStreakIfNeeded(user)

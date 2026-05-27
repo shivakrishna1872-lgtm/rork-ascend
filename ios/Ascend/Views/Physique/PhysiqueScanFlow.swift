@@ -498,10 +498,17 @@ struct PhysiqueScanFlow: View {
                 if partialities.contains(.torsoOnly) { return .torsoOnly }
                 return .full
             }()
-            let wShoulders = BodyContinuity.regionWeight(worstPartiality, region: .shoulders)
-            let wTorso = BodyContinuity.regionWeight(worstPartiality, region: .torso)
-            let wHips = BodyContinuity.regionWeight(worstPartiality, region: .hips)
-            let wLegs = BodyContinuity.regionWeight(worstPartiality, region: .legs)
+            // Region weights scale per-region scoring honestly. But when
+            // partiality is `.missing` (no usable landmarks anywhere) all
+            // weights would be 0 and the deterministic baseline would
+            // collapse to 0 — the `partialityPenalty` below already handles
+            // the "missing" case as a composite-level adjustment, so we use
+            // neutral weights here to avoid double-penalizing.
+            let useNeutralWeights = (worstPartiality == .missing)
+            let wShoulders = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .shoulders)
+            let wTorso = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .torso)
+            let wHips = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .hips)
+            let wLegs = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .legs)
 
             let avgSym = detectedPoses.isEmpty ? 0.5 : detectedPoses.map(\.symmetry).reduce(0, +) / Double(detectedPoses.count)
             let avgSW = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.shoulderWaistRatio).reduce(0, +) / Double(detectedPoses.count)
@@ -562,10 +569,17 @@ struct PhysiqueScanFlow: View {
             ))
             // When a region zeroes out, redistribute weight to what we saw so the
             // displayed score is still meaningful rather than artificially small.
+            // Guard against tiny denominators that would otherwise collapse the
+            // score to ~0 — fall back to the unweighted deterministic baseline.
             let muscularityWeightSum = 0.55 * wTorso + 0.25 * wLegs + 0.20 * wShoulders
-            let muscularity = muscularityWeightSum > 0.01
+            let muscularityBaseline = min(100, max(0,
+                0.55 * vTaper +
+                0.25 * min(100, anchors.thighHipRatio * 70) +
+                0.20 * min(100, anchors.limbSymmetry * 100)
+            ))
+            let muscularity = muscularityWeightSum > 0.2
                 ? muscularityRaw / muscularityWeightSum
-                : muscularityRaw
+                : muscularityBaseline
             // Conditioning correlates inversely with waist/shoulder ratio.
             let conditioningBase: Double = {
                 let r = anchors.waistShoulderRatio

@@ -187,9 +187,20 @@ nonisolated enum VisionTruthLayer {
         let g = Double(bitmap[1]) / 255
         let b = Double(bitmap[2]) / 255
         let luma = 0.299 * r + 0.587 * g + 0.114 * b
-        // Bell curve centered on 0.5 — too dark and too bright both score low.
-        let dist = abs(luma - 0.5)
-        let raw = max(0, 1 - dist * 2.2)
+        // Gym-tolerant lighting curve. Dim gym lighting (luma ~0.18–0.45) is
+        // *normal* — it should not crater confidence. Only true pitch-black or
+        // fully blown-out photos get penalized. Anything in the 0.18–0.80 band
+        // scores ~1.0; outside that band degrades gracefully with a 0.6 floor
+        // so the user still gets a real score, just with a softer confidence.
+        let raw: Double = {
+            if luma >= 0.18 && luma <= 0.80 { return 1.0 }
+            if luma < 0.18 {
+                // 0.0 → 0.6 floor, 0.18 → 1.0 (linear).
+                return 0.6 + (luma / 0.18) * 0.4
+            }
+            // luma > 0.80 → 0.80 = 1.0, 1.0 = 0.6 floor.
+            return 0.6 + max(0, (1.0 - luma) / 0.20) * 0.4
+        }()
         // Quantize to 0.05 so it's reproducible scan-to-scan.
         return (raw * 20).rounded() / 20
     }

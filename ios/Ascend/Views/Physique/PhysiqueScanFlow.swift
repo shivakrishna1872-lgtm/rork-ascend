@@ -613,7 +613,17 @@ struct PhysiqueScanFlow: View {
             // strength, frame coverage, and lighting — never inflated. Low
             // continuity → low confidence, no compensating fallback.
             let continuityScores: [Double] = detectedPoses.map { pose in
-                BodyContinuity.score(pose: pose, lighting: min(1, pose.brightness * 1.6))
+                // Gym-tolerant lighting remap. Dim gym lighting (brightness
+                // ~0.18–0.45) is normal and should NOT pull confidence down.
+                // Only true pitch-black/blown-out is penalized, with a 0.6
+                // floor so confidence is never cratered by lighting alone.
+                let b = pose.brightness
+                let lightingSignal: Double = {
+                    if b >= 0.18 && b <= 0.80 { return 1.0 }
+                    if b < 0.18 { return 0.6 + (b / 0.18) * 0.4 }
+                    return 0.6 + max(0, (1.0 - b) / 0.20) * 0.4
+                }()
+                return BodyContinuity.score(pose: pose, lighting: lightingSignal)
             }
             let avgContinuity = continuityScores.isEmpty
                 ? 0

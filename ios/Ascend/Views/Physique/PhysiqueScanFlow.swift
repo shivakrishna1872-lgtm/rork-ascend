@@ -510,17 +510,26 @@ struct PhysiqueScanFlow: View {
             let wHips = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .hips)
             let wLegs = useNeutralWeights ? 1.0 : BodyContinuity.regionWeight(worstPartiality, region: .legs)
 
-            let avgSym = detectedPoses.isEmpty ? 0.5 : detectedPoses.map(\.symmetry).reduce(0, +) / Double(detectedPoses.count)
-            let avgSW = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.shoulderWaistRatio).reduce(0, +) / Double(detectedPoses.count)
+            // === MULTI-PHOTO FUSION (confidence-weighted, outlier-trimmed) ========
+            // Trims the worst-confidence angle when 3 are present so a junk shot
+            // (mirror selfie, occluded back) can't drag the aggregate.
+            func sample(_ key: (PoseResult) -> Double) -> [PhotoFusion.Sample] {
+                detectedPoses.map { .init(value: key($0), confidence: $0.confidenceAverage) }
+            }
+            let avgSym = PhotoFusion.fuse(sample(\.symmetry), default: 0.5)
+            let avgSW = PhotoFusion.fuse(sample(\.shoulderWaistRatio), default: 1.4)
             // Waist/shoulder is most reliable from front + back views.
-            let waistSamples: [Double] = [poses[0], poses[2]].compactMap { $0?.waistShoulderRatio }
-            let avgWaist = waistSamples.isEmpty ? 0.85 : waistSamples.reduce(0, +) / Double(waistSamples.count)
-            let avgThigh = detectedPoses.isEmpty ? 1.0 : detectedPoses.map(\.thighHipRatio).reduce(0, +) / Double(detectedPoses.count)
-            let avgTorso = detectedPoses.isEmpty ? 1.4 : detectedPoses.map(\.torsoAspect).reduce(0, +) / Double(detectedPoses.count)
-            let avgLimbSym = detectedPoses.isEmpty ? 0.9 : detectedPoses.map(\.limbSymmetry).reduce(0, +) / Double(detectedPoses.count)
-            let avgTilt = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.shoulderTiltDeg).reduce(0, +) / Double(detectedPoses.count)
-            let avgCov = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.coverageY).reduce(0, +) / Double(detectedPoses.count)
-            let avgConfPose = detectedPoses.isEmpty ? 0 : detectedPoses.map(\.confidenceAverage).reduce(0, +) / Double(detectedPoses.count)
+            let waistFront = poses[0].map { PhotoFusion.Sample(value: $0.waistShoulderRatio, confidence: $0.confidenceAverage) }
+            let waistBack = poses[2].map { PhotoFusion.Sample(value: $0.waistShoulderRatio, confidence: $0.confidenceAverage) }
+            let avgWaist = PhotoFusion.fuse([waistFront, waistBack].compactMap { $0 }, default: 0.85)
+            let avgThigh = PhotoFusion.fuse(sample(\.thighHipRatio), default: 1.0)
+            let avgTorso = PhotoFusion.fuse(sample(\.torsoAspect), default: 1.4)
+            let avgLimbSym = PhotoFusion.fuse(sample(\.limbSymmetry), default: 0.9)
+            let avgTilt = PhotoFusion.fuse(sample(\.shoulderTiltDeg), default: 0)
+            let avgCov = PhotoFusion.fuse(sample(\.coverageY), default: 0)
+            let avgConfPose = PhotoFusion.fuse(sample(\.confidenceAverage), default: 0)
+            // Surface a confidence reason if angles disagree strongly on V-taper.
+            let svtDispersion = PhotoFusion.dispersion(sample(\.shoulderWaistRatio))
 
             // On-device body-fat anchor.
             // Combines a Navy-style proxy (waist/shoulder ratio scaled) with a
@@ -649,6 +658,15 @@ struct PhysiqueScanFlow: View {
             if avgContinuity < 0.5 && worstPartiality == .full {
                 reasons.append("Lighting or framing reduced detection quality.")
             }
+            if svtDispersion > 0.18 && detectedPoses.count >= 2 {
+                reasons.append("Angles disagreed on body shape — used the most confident shots.")
+            }
+
+            // === CALIBRATION CARD (optional reference for real-world cm) ==========
+            // Looks for a credit-card or A4-shaped rectangle in the front photo.
+            // When found, the scan stores pixels-per-cm so widths become real
+            // measurements. Absence is silent — this is purely additive.
+            let calibrationCard = await CalibrationCardDetector.detect(in: f)
             // Cross-pipeline consistency — if a recent face scan exists, check
             // PSL vs Physique agreement. We *never* average; we only penalize
             // confidence and surface the disagreement.
@@ -695,7 +713,9 @@ struct PhysiqueScanFlow: View {
                 inputPayload: ScanReplay.capture(anchors: anchors, calibration: calibration),
                 confidenceReasons: reasons,
                 partialityRaw: worstPartiality.rawValue,
-                isUncertaintyEvent: isUncertaintyEvent
+                isUncertaintyEvent: isUncertaintyEvent,
+                pixelsPerCm: calibrationCard?.pixelsPerCm ?? 0,
+                calibrationReferenceRaw: calibrationCard?.reference.rawValue ?? ""
             )
             ctx.insert(record)
             try? ctx.save()

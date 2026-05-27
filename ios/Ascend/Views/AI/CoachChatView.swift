@@ -38,7 +38,12 @@ struct CoachChatView: View {
         return false
     }
 
+    /// Special starter token that triggers an on-device weekly review instead
+    /// of an AI round-trip. Lets the user run it offline with zero cost.
+    private static let weeklyReviewToken = "✨ Run weekly review"
+
     private let starters: [String] = [
+        weeklyReviewToken,
         "How am I doing this week?",
         "I was sick — drop today's cals",
         "Plan my week",
@@ -246,8 +251,12 @@ struct CoachChatView: View {
                 ForEach(starters, id: \.self) { s in
                     Button {
                         Haptics.soft()
-                        input = s
-                        inputFocused = true
+                        if s == Self.weeklyReviewToken {
+                            runWeeklyReview()
+                        } else {
+                            input = s
+                            inputFocused = true
+                        }
                     } label: {
                         Text(s)
                             .font(.system(size: 13, weight: .semibold))
@@ -581,6 +590,45 @@ struct CoachChatView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
+            }
+        }
+    }
+
+    // MARK: - Weekly review (on-device, deterministic)
+
+    /// Builds a weekly review locally from SwiftData and inserts it as an
+    /// assistant message plus one-tap action cards. Never calls the AI.
+    @MainActor
+    private func runWeeklyReview() {
+        let review = WeeklyReviewService.build(
+            calorieTarget: user.dailyCalorieTarget,
+            proteinTarget: user.proteinTargetG,
+            meals: meals,
+            lifts: lifts,
+            sets: setLogs,
+            scans: scans
+        )
+        var body = "✨ Weekly review\n\n“\(review.headline)”\n\n"
+        body += review.bullets.map { "• \($0)" }.joined(separator: "\n")
+        if !review.plateaus.isEmpty {
+            body += "\n\nPlateau watch:\n"
+            body += review.plateaus
+                .map { "• \($0.exerciseName) — \($0.rationale)" }
+                .joined(separator: "\n")
+        }
+        let msg = ChatMessage(kind: .assistant, text: body, isOffline: true)
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+            messages.append(msg)
+        }
+        for action in review.actions {
+            var args = CoachToolArgs()
+            args.calories = action.calories
+            args.proteinG = action.proteinG
+            args.days = action.days
+            let call = CoachToolCall(tool: action.tool, summary: action.summary, args: args)
+            let card = ChatMessage(kind: .action(call, call.id), text: "")
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+                messages.append(card)
             }
         }
     }

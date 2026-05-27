@@ -11,6 +11,8 @@ struct PhysiqueView: View {
     @State private var showScanFlow = false
     @State private var showLiftLog = false
     @State private var selected: PhysiqueScanRecord?
+    @State private var showDiff = false
+    @Query(sort: \SetLog.date, order: .reverse) private var setLogs: [SetLog]
 
     var body: some View {
         ScrollView {
@@ -24,11 +26,14 @@ struct PhysiqueView: View {
                     radarCard(latest).blurFadeIn(delay: 0.18)
                     liftsCard(latest).blurFadeIn(delay: 0.19)
                     if lifts.count >= 2 { liftsProgressCard().blurFadeIn(delay: 0.205) }
+                    let plateaus = PlateauDetector.detect(history: setLogs)
+                    if !plateaus.isEmpty { plateauCard(plateaus).blurFadeIn(delay: 0.215) }
                     strengthCard(latest).blurFadeIn(delay: 0.21)
                     archetypeCard(latest).blurFadeIn(delay: 0.22)
                     if scans.count >= 2 {
                         sparklineCard(scans).blurFadeIn(delay: 0.24)
                         trendCard(latest: latest, previous: scans[1]).blurFadeIn(delay: 0.26)
+                        compareCTA.blurFadeIn(delay: 0.27)
                     }
                     goalProjectionCard(latest).blurFadeIn(delay: 0.28)
                     if !latest.recommendations.isEmpty {
@@ -53,6 +58,9 @@ struct PhysiqueView: View {
         }
         .sheet(item: $selected) { rec in
             PhysiqueResultsView(record: rec, isHistory: true)
+        }
+        .sheet(isPresented: $showDiff) {
+            PhysiqueDiffView(scans: scans)
         }
     }
 
@@ -691,6 +699,86 @@ struct PhysiqueView: View {
     }
 
     // MARK: - New: Sparkline of physique score across scans
+
+    private var compareCTA: some View {
+        Button {
+            Haptics.tap(); showDiff = true
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(Theme.accent.opacity(0.16)).frame(width: 38, height: 38)
+                    Image(systemName: "rectangle.on.rectangle.angled")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Theme.accentGlow)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Compare scans")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("See before vs after, side by side.")
+                        .font(.aetherCaption).foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity)
+            .glassCard(radius: 18)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func plateauCard(_ flags: [PlateauDetector.Flag]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Plateau Watch".uppercased())
+                    .font(.system(size: 10, weight: .semibold)).tracking(2)
+                    .foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text("\(flags.count) flagged")
+                    .font(.aetherCaption).foregroundStyle(Theme.warn)
+            }
+            ForEach(flags) { f in
+                HStack(alignment: .top, spacing: 12) {
+                    ZStack {
+                        Circle().fill(Theme.warn.opacity(0.18)).frame(width: 32, height: 32)
+                        Image(systemName: plateauIcon(f.suggestion))
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Theme.warn)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(f.exerciseName)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.textPrimary)
+                            Text("\(f.weeksStalled)w")
+                                .font(.system(size: 10, weight: .heavy)).tracking(0.5)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(Theme.warn.opacity(0.2)))
+                                .foregroundStyle(Theme.warn)
+                        }
+                        Text(f.rationale)
+                            .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard(radius: 20)
+    }
+
+    private func plateauIcon(_ s: PlateauDetector.Flag.Suggestion) -> String {
+        switch s {
+        case .deload: return "arrow.down.right"
+        case .variation: return "arrow.triangle.2.circlepath"
+        case .repsFirst: return "plus.forwardslash.minus"
+        }
+    }
 
     private func sparklineCard(_ scans: [PhysiqueScanRecord]) -> some View {
         // scans are newest-first; chart oldest → newest

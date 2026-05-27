@@ -203,6 +203,12 @@ final class PhysiqueScanRecord {
     /// True when the cross-pipeline check (PSL ↔ Physique) flagged a
     /// divergence. UI renders an uncertainty badge.
     var isUncertaintyEvent: Bool = false
+    /// Pixels-per-centimeter from an optional in-shot reference card
+    /// (credit card or A4). 0 = no calibration card detected. When > 0,
+    /// downstream views can convert pixel widths into real measurements.
+    var pixelsPerCm: Double = 0
+    /// Raw label of the reference ("creditCard", "a4Paper") if detected.
+    var calibrationReferenceRaw: String = ""
 
     init(
         date: Date = .now,
@@ -225,7 +231,9 @@ final class PhysiqueScanRecord {
         inputPayload: String = "",
         confidenceReasons: [String] = [],
         partialityRaw: String = "full",
-        isUncertaintyEvent: Bool = false
+        isUncertaintyEvent: Bool = false,
+        pixelsPerCm: Double = 0,
+        calibrationReferenceRaw: String = ""
     ) {
         self.date = date
         self.physiqueScore = physiqueScore
@@ -248,6 +256,8 @@ final class PhysiqueScanRecord {
         self.confidenceReasons = confidenceReasons
         self.partialityRaw = partialityRaw
         self.isUncertaintyEvent = isUncertaintyEvent
+        self.pixelsPerCm = pixelsPerCm
+        self.calibrationReferenceRaw = calibrationReferenceRaw
     }
 
     var archetype: Archetype { Archetype(rawValue: archetypeRaw) ?? .balanced }

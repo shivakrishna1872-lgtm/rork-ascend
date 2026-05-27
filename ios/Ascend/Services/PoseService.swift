@@ -136,10 +136,17 @@ nonisolated struct PoseService {
             return analyzeFallback(cg: cg, rect: fallbackRect, seg: fallbackSeg)
         }
 
+        // Full Vision body pose joint set (19 of 19). Eyes/ears anchor head
+        // orientation and let us detect side-profile shots. `root` is the
+        // mid-pelvis joint — a robust pelvis center even when one hip is
+        // occluded by a phone, hand, or baggy clothing.
         let names: [VNHumanBodyPoseObservation.JointName] = [
-            .nose, .neck, .leftShoulder, .rightShoulder,
+            .nose, .neck,
+            .leftEye, .rightEye, .leftEar, .rightEar,
+            .leftShoulder, .rightShoulder,
             .leftElbow, .rightElbow, .leftWrist, .rightWrist,
-            .leftHip, .rightHip, .leftKnee, .rightKnee,
+            .root, .leftHip, .rightHip,
+            .leftKnee, .rightKnee,
             .leftAnkle, .rightAnkle
         ]
 
@@ -461,8 +468,12 @@ nonisolated struct PoseService {
     /// validate that we have enough geometry to score the body even when face
     /// and limbs are partially occluded.
     private func countTorsoJoints(_ obs: VNHumanBodyPoseObservation) -> Int {
+        // Neck + root act as fallback torso anchors so a single-hip or
+        // single-shoulder detection still scores as usable torso when the
+        // centerline is found.
         let torso: [VNHumanBodyPoseObservation.JointName] = [
-            .leftShoulder, .rightShoulder, .leftHip, .rightHip
+            .leftShoulder, .rightShoulder, .leftHip, .rightHip,
+            .neck, .root
         ]
         var n = 0
         for j in torso {

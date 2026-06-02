@@ -46,7 +46,12 @@ struct CameraSheet: UIViewControllerRepresentable {
         nonisolated func imagePickerController(_ picker: UIImagePickerController,
                                                didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
             let raw = info[.originalImage] as? UIImage
-            let processed: UIImage? = raw?.normalizedOrientation()
+            // The front-camera still is captured un-mirrored (flipped relative to the
+            // live preview the user just saw), which reads as "inverted". Mirror it
+            // back so the saved photo matches the preview, like the system Camera app.
+            let isFront = picker.cameraDevice == .front
+            var processed: UIImage? = raw?.normalizedOrientation()
+            if isFront { processed = processed?.horizontallyFlipped() }
             DispatchQueue.main.async { [onCapture, onCancel] in
                 if let processed { onCapture(processed) } else { onCancel() }
             }

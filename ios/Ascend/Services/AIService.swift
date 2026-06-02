@@ -517,35 +517,75 @@ nonisolated struct AIService {
         let imgs = image.map { [$0] } ?? []
         let cacheKey = AIResponseCache.hash(["meal", description, unitSystem, AIResponseCache.imageDigest(imgs)])
 
-        // PRIORITY 1 — On-device (Vision classify + local food DB + USDA/OFF lookup).
-        // Deterministic, offline-first, DB-grounded macros. Always tried first;
-        // any non-nil result is accepted because macros come from the database,
-        // not a model.
-        if let local = await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem) {
+        // On-device helper (Vision classify + local food DB + USDA/OFF lookup).
+        // Deterministic, offline-first, DB-grounded macros. Used as the primary
+        // path for text-only logging and as the fallback when the cloud vision
+        // model is unavailable or consent is off.
+        func onDevice() async -> MealAnalysis? {
+            await OnDeviceMealService.shared.analyze(description: description, image: image, unitSystem: unitSystem)
+        }
+
+        if let image {
+            // PRIORITY 1 (photo) — Cloud vision model. It is dramatically better at
+            // NAMING the specific dish and breaking down WHAT'S INSIDE than the
+            // on-device classifier, which is exactly what users care about. The
+            // structured prompt still constrains macros (calories must equal
+            // 4P+4C+9F within tolerance) and everything is clamped on decode.
+            do {
+                let r = try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
+                // Guard against a weak / empty model result — if the vision model
+                // returned an unnamed dish with no breakdown, fall through to the
+                // on-device DB rather than show the user a blank "Meal".
+                if isUsableMeal(r) {
+                    AIResponseCache.store(key: cacheKey, value: r)
+                    return r
+                }
+            } catch let e as AIServiceError {
+                if case .consentDenied = e {
+                    // Consent off -> stay fully offline via the on-device pipeline.
+                    if let local = await onDevice() {
+                        AIResponseCache.store(key: cacheKey, value: local)
+                        return local
+                    }
+                    throw e
+                }
+            } catch { /* network/parse failure - fall back below */ }
+
+            if let local = await onDevice() {
+                AIResponseCache.store(key: cacheKey, value: local)
+                return local
+            }
+            if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
+            return MealHeuristic.estimate(description: description, hasImage: true, unitSystem: unitSystem)
+        }
+
+        // TEXT-ONLY - the on-device parser handles "2 eggs and rice" cheaply and
+        // deterministically; only reach for the cloud text model if it can't.
+        if let local = await onDevice() {
             AIResponseCache.store(key: cacheKey, value: local)
             return local
         }
-
-        // PRIORITY 2 — Cloud vision model. Only invoked when on-device couldn't
-        // produce ANY grounded candidate. The model still goes through the
-        // structured prompt; nutrition fields are validated downstream.
         do {
-            let r: MealAnalysis
-            if let image {
-                r = try await callJSONVision(prompt: prompt, images: [image], as: MealAnalysis.self)
-            } else {
-                r = try await callJSONText(prompt: prompt, as: MealAnalysis.self)
-            }
+            let r = try await callJSONText(prompt: prompt, as: MealAnalysis.self)
             AIResponseCache.store(key: cacheKey, value: r)
             return r
         } catch let e as AIServiceError {
             if case .consentDenied = e { throw e }
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
-            return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
+            return MealHeuristic.estimate(description: description, hasImage: false, unitSystem: unitSystem)
         } catch {
             if let cached: MealAnalysis = AIResponseCache.load(key: cacheKey) { return cached }
-            return MealHeuristic.estimate(description: description, hasImage: image != nil, unitSystem: unitSystem)
+            return MealHeuristic.estimate(description: description, hasImage: false, unitSystem: unitSystem)
         }
+    }
+
+    /// A vision result is only trusted when it actually identified the dish and
+    /// produced sane macros - otherwise we prefer the DB-grounded on-device path.
+    private func isUsableMeal(_ r: MealAnalysis) -> Bool {
+        let name = r.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !name.isEmpty, name != "meal", name != "food", name != "unknown" else { return false }
+        guard r.calories > 0 else { return false }
+        return true
     }
 
     /// Comprehensive coach analysis across every signal we have: physique, face,

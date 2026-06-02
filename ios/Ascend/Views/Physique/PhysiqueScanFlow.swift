@@ -568,27 +568,33 @@ struct PhysiqueScanFlow: View {
             // V-taper score: deterministic mapping from shoulder/hip ratio.
             let vTaperRaw = max(0.9, min(1.9, anchors.shoulderWaistRatio))
             let vTaper = min(100, max(0, (vTaperRaw - 1.0) * 125))
-            // Muscularity: deterministic blend of v-taper + thigh/hip + limb development.
-            // Region-weighted — if legs aren't in frame, the thigh/hip contribution
-            // collapses honestly instead of being padded with a default.
-            let muscularityRaw = min(100, max(0,
-                0.55 * vTaper * wTorso +
-                0.25 * min(100, anchors.thighHipRatio * 70) * wLegs +
-                0.20 * min(100, anchors.limbSymmetry * 100) * wShoulders
-            ))
-            // When a region zeroes out, redistribute weight to what we saw so the
-            // displayed score is still meaningful rather than artificially small.
-            // Guard against tiny denominators that would otherwise collapse the
-            // score to ~0 — fall back to the unweighted deterministic baseline.
-            let muscularityWeightSum = 0.55 * wTorso + 0.25 * wLegs + 0.20 * wShoulders
-            let muscularityBaseline = min(100, max(0,
-                0.55 * vTaper +
-                0.25 * min(100, anchors.thighHipRatio * 70) +
-                0.20 * min(100, anchors.limbSymmetry * 100)
-            ))
-            let muscularity = muscularityWeightSum > 0.2
-                ? muscularityRaw / muscularityWeightSum
-                : muscularityBaseline
+            // Muscularity: built from FOUR real on-device measurements so a
+            // single missing region never zeroes it out.
+            //  - frame width (V-taper / shoulder dominance)
+            //  - lower-body mass (thigh / hip width)
+            //  - limb development symmetry (balanced arm + leg build)
+            //  - torso build (a shorter, wider torso reads as more mass)
+            // Each component is renormalized by the region weights actually
+            // present, so partial scans still produce a real, meaningful score
+            // rather than collapsing toward 0.
+            let vTaperComp = vTaper                                                  // 0..100
+            let lowerComp  = min(100, max(0, (anchors.thighHipRatio - 0.6) * 110))   // 0..100
+            let limbComp   = min(100, max(0, anchors.limbSymmetry * 100))            // 0..100
+            let buildComp  = min(100, max(0, (1.7 - anchors.torsoAspect) * 70 + 30)) // 0..100
+            let muscleParts: [(value: Double, weight: Double)] = [
+                (vTaperComp, 0.45 * wTorso),
+                (lowerComp,  0.20 * wLegs),
+                (limbComp,   0.20 * wShoulders),
+                (buildComp,  0.15 * wTorso)
+            ]
+            let muscleWeightSum = muscleParts.reduce(0) { $0 + $1.weight }
+            let muscularity: Double = {
+                let weighted = muscleWeightSum > 0.05
+                    ? muscleParts.reduce(0) { $0 + $1.value * $1.weight } / muscleWeightSum
+                    : (0.45 * vTaperComp + 0.20 * lowerComp + 0.20 * limbComp + 0.15 * buildComp)
+                // Floor: any detected body has SOME musculature read — never 0.
+                return min(100, max(8, weighted))
+            }()
             // Conditioning correlates inversely with waist/shoulder ratio.
             let conditioningBase: Double = {
                 let r = anchors.waistShoulderRatio

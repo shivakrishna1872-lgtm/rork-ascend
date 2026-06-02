@@ -354,10 +354,16 @@ nonisolated struct PoseService {
         return Double(re - le) / Double(w)
     }
 
-    /// Face landmark analysis (Vision = on-device equivalent of MediaPipe Face Mesh)
+    /// Face landmark analysis. Uses Apple Vision's densest on-device
+    /// constellation (76 points) and reads EVERY exposed region — face
+    /// contour, both eyes + pupils, both eyebrows, nose, nose crest, median
+    /// line, and inner + outer lips. More anchors → a more stable, accurate
+    /// symmetry axis and proportion read, all computed privately on-device.
     func analyzeFace(_ image: UIImage) async -> FaceMeasurements? {
         guard let cg = image.cgImage else { return nil }
         let request = VNDetectFaceLandmarksRequest()
+        // Request the maximum-density landmark constellation Vision offers.
+        request.constellation = .constellation76Points
         let handler = VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:])
         do { try handler.perform([request]) } catch { return nil }
 
@@ -386,14 +392,46 @@ nonisolated struct PoseService {
         let nose = centroid(lm.nose)
         let outerLips = centroid(lm.outerLips)
         let faceContour = lm.faceContour
+        let leftBrow = centroid(lm.leftEyebrow)
+        let rightBrow = centroid(lm.rightEyebrow)
+        let leftPupil = centroid(lm.leftPupil)
+        let rightPupil = centroid(lm.rightPupil)
+        let medianCentroid = centroid(lm.medianLine)
 
-        // Symmetry: how well left/right eye and lips align around the face center
+        // Symmetry from MULTIPLE mirrored landmark pairs around the facial
+        // midline. The median-line region is the most accurate vertical axis
+        // Vision gives us (falls back to nose, then eye midpoint). For each
+        // available pair we measure (a) vertical level mismatch and (b) how
+        // unevenly the two points straddle the axis. Averaging across eyes,
+        // brows, and pupils makes the score far more stable than a single
+        // eye-pair read.
         var symmetry = 0.8
-        if let le = leftEye, let re = rightEye, let n = nose {
-            let midX = (le.x + re.x) / 2
-            let dy = abs(le.y - re.y)
-            let xOff = abs(n.x - midX)
-            symmetry = max(0, min(1, 1 - Double(dy) * 8 - Double(xOff) * 4))
+        let axisX: CGFloat? = medianCentroid?.x
+            ?? nose?.x
+            ?? (leftEye != nil && rightEye != nil ? (leftEye!.x + rightEye!.x) / 2 : nil)
+        if let axis = axisX {
+            let pairs: [(CGPoint, CGPoint)] = [
+                (leftEye, rightEye),
+                (leftBrow, rightBrow),
+                (leftPupil, rightPupil),
+                (outerLips != nil ? outerLips : nil, nil) // placeholder filtered below
+            ].compactMap { l, r in
+                guard let l, let r else { return nil }
+                return (l, r)
+            }
+            if !pairs.isEmpty {
+                var penalties: [Double] = []
+                for (l, r) in pairs {
+                    let levelDiff = Double(abs(l.y - r.y))                 // vertical mismatch
+                    let straddle = Double(abs(abs(l.x - axis) - abs(r.x - axis))) // off-axis imbalance
+                    penalties.append(levelDiff * 7 + straddle * 5)
+                }
+                let avgPenalty = penalties.reduce(0, +) / Double(penalties.count)
+                symmetry = max(0, min(1, 1 - avgPenalty))
+            } else if let le = leftEye, let re = rightEye {
+                let midX = (le.x + re.x) / 2
+                symmetry = max(0, min(1, 1 - Double(abs(le.y - re.y)) * 8 - Double(abs(axis - midX)) * 4))
+            }
         }
 
         // Thirds: forehead/midface/lower-face balance

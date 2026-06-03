@@ -108,6 +108,10 @@ export class Hub extends DurableObject {
       if (path === "/rankings/global" && method === "GET") {
         return this.globalRankings(url.searchParams.get("userId") ?? "");
       }
+      const userMatch = path.match(/^\/users\/([^/]+)$/);
+      if (userMatch && method === "DELETE") {
+        return this.deleteUser(decodeURIComponent(userMatch[1]));
+      }
       if (path === "/circles" && method === "POST") {
         return this.createCircle(await request.json());
       }
@@ -208,6 +212,47 @@ export class Hub extends DurableObject {
       top: top.map((u, i) => ({ rank: i + 1, ...serializeUser(u) })),
       me: me ? { rank: me.rank, ...serializeUser(me.user) } : null,
     });
+  }
+
+  /// Permanently remove a user: drops their leaderboard row and every circle
+  /// membership, and deletes any circle left empty (or owned by them). Called
+  /// when a user deletes their account so they no longer appear in rankings.
+  private deleteUser(userId: string): Response {
+    const id = (userId ?? "").trim();
+    if (!id) return json({ ok: false, error: "missing_userId" }, 400);
+
+    // Circles this user belongs to (to clean up empties afterwards).
+    const circleIds = this.ctx.storage.sql
+      .exec<{ circle_id: string }>(
+        `SELECT circle_id FROM circle_members WHERE user_id = ?`,
+        id
+      )
+      .toArray()
+      .map((r) => r.circle_id);
+
+    // Remove the user's memberships and leaderboard row.
+    this.ctx.storage.sql.exec(`DELETE FROM circle_members WHERE user_id = ?`, id);
+    this.ctx.storage.sql.exec(`DELETE FROM users WHERE id = ?`, id);
+
+    // Delete circles the user owned, or any that are now empty.
+    this.ctx.storage.sql.exec(`DELETE FROM circles WHERE owner_id = ?`, id);
+    for (const cid of circleIds) {
+      const left = this.ctx.storage.sql
+        .exec<{ c: number }>(
+          `SELECT COUNT(*) AS c FROM circle_members WHERE circle_id = ?`,
+          cid
+        )
+        .toArray()[0]?.c ?? 0;
+      if (left === 0) {
+        this.ctx.storage.sql.exec(`DELETE FROM circles WHERE id = ?`, cid);
+      }
+    }
+    // Drop memberships pointing at circles we just removed.
+    this.ctx.storage.sql.exec(
+      `DELETE FROM circle_members WHERE circle_id NOT IN (SELECT id FROM circles)`
+    );
+
+    return json({ ok: true });
   }
 
   // ----- Circles -----

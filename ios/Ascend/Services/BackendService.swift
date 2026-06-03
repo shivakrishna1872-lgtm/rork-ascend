@@ -81,6 +81,23 @@ final class BackendService {
         }
     }
 
+    /// Permanently delete the current user from the server: removes their
+    /// global leaderboard row and all circle memberships. Best-effort; called
+    /// during account deletion so the user no longer appears in rankings.
+    @discardableResult
+    func deleteUser() async -> Bool {
+        let encoded = currentUserId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? currentUserId
+        guard let req = makeRequest("/users/\(encoded)", method: "DELETE") else {
+            return false
+        }
+        do {
+            _ = try await session.data(for: req)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Rankings
 
     func fetchGlobalRankings() async throws -> GlobalRankings {

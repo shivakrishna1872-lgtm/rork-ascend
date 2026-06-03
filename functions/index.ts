@@ -58,6 +58,7 @@ export default {
     // Hub DO routes.
     if (
       url.pathname === "/users/upsert" ||
+      url.pathname.startsWith("/users/") ||
       url.pathname === "/rankings/global" ||
       url.pathname === "/circles" ||
       url.pathname.startsWith("/circles/")

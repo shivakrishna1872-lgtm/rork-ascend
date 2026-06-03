@@ -154,6 +154,10 @@ struct ProfileView: View {
             //    Best-effort — we never block local deletion on a network call.
             _ = await AuthService.shared.revokeAppleTokenIfPossible()
 
+            // 1b. Server-side: remove the user from the global leaderboard and
+            //     every circle so they no longer appear in rankings.
+            _ = await BackendService.shared.deleteUser()
+
             await MainActor.run {
                 // 2. Wipe every SwiftData record owned by this user.
                 do {

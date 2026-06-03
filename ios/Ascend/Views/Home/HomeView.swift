@@ -49,7 +49,11 @@ struct HomeView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .task { await loadInsight() }
+        .task {
+            app.reconcileStreak(user)
+            try? ctx.save()
+            await loadInsight()
+        }
     }
 
     private var header: some View {

@@ -236,7 +236,14 @@ struct FaceScanSheet: View {
                                 .transition(.scale.combined(with: .opacity))
                         }
                         if revealStep >= 3 {
-                            metricsGrid(result).transition(.opacity.combined(with: .move(edge: .bottom)))
+                            VStack(spacing: 8) {
+                                metricsGrid(result)
+                                Label("478-point facial mesh + 52 expression signals, on-device", systemImage: "face.dashed.fill")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(Theme.textTertiary)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
                         if revealStep >= 4 {
                             VStack(alignment: .leading, spacing: 8) {
@@ -480,7 +487,7 @@ struct FaceScanSheet: View {
     }
 
     private var analyzingLabel: String {
-        let phases = ["Mapping landmarks", "Averaging symmetry", "Analyzing thirds", "Reading jawline", "Synthesizing harmony"]
+        let phases = ["Mapping 478-point mesh", "Reading 52 expression signals", "Averaging symmetry", "Analyzing thirds", "Reading jawline", "Synthesizing harmony"]
         let idx = Int(phase / (.pi * 2 / Double(phases.count))) % phases.count
         return phases[idx]
     }

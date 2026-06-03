@@ -88,11 +88,17 @@ nonisolated struct DeterministicFaceScoring {
         let mid = 1 - abs((psl - 65) / 35)
         let glowUp = clamp(20 + mid * 40, lo: 10, hi: 60)
 
-        // Confidence: sample count + agreement + face quality. 3 photos with
-        // high agreement on a clean face = 1.0. Poor face quality scales it
-        // down honestly instead of pretending the read was clean.
+        // Confidence: sample count + agreement + face quality + expression
+        // neutrality. 3 photos with high agreement on a clean, relaxed face
+        // = 1.0. An expressive face (big smile / squint) distorts proportions,
+        // so neutrality scales confidence down honestly rather than pretending
+        // the read was structurally clean.
         let sampleBoost = min(1.0, Double(sampleCount) / 3.0)
-        let conf = clamp(0.40 * sampleBoost + 0.35 * consistency + 0.25 * faceQuality, lo: 0, hi: 1)
+        let neutrality = measurements?.expressionNeutrality ?? 1.0
+        let conf = clamp(
+            0.34 * sampleBoost + 0.30 * consistency + 0.21 * faceQuality + 0.15 * neutrality,
+            lo: 0, hi: 1
+        )
 
         return Score(
             pslScore:        round(psl * 10) / 10,

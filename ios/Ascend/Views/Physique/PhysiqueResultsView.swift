@@ -66,8 +66,11 @@ struct PhysiqueResultsView: View {
                     }
 
                     if revealStep >= 4 {
-                        metricsGrid
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        VStack(spacing: 8) {
+                            metricsGrid
+                            methodologyCaption
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
                     if revealStep >= 5 {
@@ -156,6 +159,13 @@ struct PhysiqueResultsView: View {
             metricCard("Conditioning", record.conditioningScore, "flame.fill")
             metricCard("V-Taper", record.vTaperScore, "triangle.fill")
         }
+    }
+
+    private var methodologyCaption: some View {
+        Label("19-joint skeleton + dense body silhouette, on-device", systemImage: "point.3.connected.trianglepath.dotted")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(Theme.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func metricCard(_ label: String, _ value: Double, _ icon: String) -> some View {

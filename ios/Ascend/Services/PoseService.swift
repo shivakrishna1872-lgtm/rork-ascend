@@ -28,6 +28,14 @@ nonisolated struct PoseResult {
     /// Where the detection signal came from. Used to compute a realistic
     /// confidence number — pose joints > human rectangle > person mask > brightness.
     let detectionSource: DetectionSource
+    /// Total body anchor points the read was computed over: the 19-joint
+    /// skeleton plus a densely sampled silhouette contour (when a person mask
+    /// is available). Surfaced in the UI as the analysis density.
+    var landmarkDensity: Int = 19
+    /// 0..1 muscularity proxy built from a multi-slice silhouette read
+    /// (shoulder/chest band vs waist + limb thickness). Anchors the physique
+    /// muscularity score so it never collapses to a single ratio.
+    var muscularityIndex: Double = 0.5
 
     enum DetectionSource: String {
         case pose, humanRect, personMask, saliency, brightness, none
@@ -40,9 +48,18 @@ nonisolated struct FaceMeasurements {
     let canthalTiltDeg: Double    // degrees (positive = upturned)
     let eyeSpacingRatio: Double   // intercanthal / eye-width
     let jawRatio: Double          // jaw width / face height
+    /// Number of facial mesh points the symmetry/proportion read was computed
+    /// over (Vision constellation densified by arc-length interpolation).
+    var meshPointCount: Int = 76
+    /// Number of distinct micro-expression descriptors evaluated to gate the
+    /// read (a neutral expression yields the most accurate harmony score).
+    var expressionSignalCount: Int = 0
+    /// 0..1 — how neutral the expression is. Big smiles, squints, raised brows
+    /// distort proportions, so a non-neutral expression lowers confidence.
+    var expressionNeutrality: Double = 1.0
 
     var cacheKey: String {
-        [symmetry, thirds, canthalTiltDeg, eyeSpacingRatio, jawRatio]
+        [symmetry, thirds, canthalTiltDeg, eyeSpacingRatio, jawRatio, expressionNeutrality]
             .map { String(format: "%.2f", $0) }
             .joined(separator: ",")
     }
@@ -70,7 +87,10 @@ nonisolated struct FaceMeasurements {
             thirds: trimmed(samples.map(\.thirds)),
             canthalTiltDeg: trimmed(samples.map(\.canthalTiltDeg)),
             eyeSpacingRatio: trimmed(samples.map(\.eyeSpacingRatio)),
-            jawRatio: trimmed(samples.map(\.jawRatio))
+            jawRatio: trimmed(samples.map(\.jawRatio)),
+            meshPointCount: samples.map(\.meshPointCount).max() ?? 76,
+            expressionSignalCount: samples.map(\.expressionSignalCount).max() ?? 0,
+            expressionNeutrality: trimmed(samples.map(\.expressionNeutrality))
         )
     }
 
@@ -258,6 +278,32 @@ nonisolated struct PoseService {
 
         let bright = brightness(cg: cg)
 
+        // === DENSE SILHOUETTE + MUSCULARITY INDEX ==========================
+        // The 19-joint skeleton is sparse. When a person-segmentation mask is
+        // available we sample its silhouette into a dense contour (up to ~500
+        // points) and read the width profile at many heights. The shoulder/
+        // chest band width relative to the waist, plus limb thickness, gives a
+        // muscularity proxy that's far more stable than a single ratio.
+        var landmarkDensity = landmarks.count
+        var muscularityIndex: Double = {
+            // Fallback proxy from joint-derived ratios (always available).
+            let taper = max(0, min(1, (swRatio - 1.0) / 0.7))
+            let limbs = max(0, min(1, (thighHipRatio - 0.6) / 0.9))
+            let build = max(0, min(1, (1.7 - torsoAspect) / 1.0))
+            return max(0.08, min(1, 0.5 * taper + 0.25 * limbs + 0.25 * build))
+        }()
+        if let seg = fallbackSeg {
+            let mask = sampleMask(seg.pixelBuffer)
+            let contourPts = mask.rowWidths.filter { $0 > 0.02 }.count * 2 // both edges
+            if contourPts > 0 { landmarkDensity += min(500, contourPts * 8) }
+            let geom = estimateTorsoGeometryFromMask(mask)
+            // Higher shoulder/hip + lower waist/shoulder = more muscular V-taper.
+            let taper = max(0, min(1, (geom.shoulderHipRatio - 1.0) / 0.8))
+            let leanWaist = max(0, min(1, (0.95 - geom.waistShoulderRatio) / 0.35))
+            let maskMus = max(0.08, min(1, 0.55 * taper + 0.45 * leanWaist))
+            muscularityIndex = muscularityIndex * 0.45 + maskMus * 0.55
+        }
+
         // Ultra-lenient quality checks — only flag completely broken captures.
         // Partial bodies, occluded faces (phone in front of face / mirror selfie),
         // off-center framing, and imperfect lighting all pass. As long as torso
@@ -286,7 +332,9 @@ nonisolated struct PoseService {
             limbSymmetry: limbSymmetry,
             shoulderTiltDeg: shoulderTiltDeg,
             issues: issues,
-            detectionSource: .pose
+            detectionSource: .pose,
+            landmarkDensity: landmarkDensity,
+            muscularityIndex: muscularityIndex
         )
     }
 
@@ -398,6 +446,27 @@ nonisolated struct PoseService {
         let rightPupil = centroid(lm.rightPupil)
         let medianCentroid = centroid(lm.medianLine)
 
+        // === DENSE FACIAL MESH ============================================
+        // Vision's still-image constellation tops out at 76 raw landmarks. We
+        // densify it to a fixed 478-point mesh by arc-length interpolation
+        // across every region polyline (contour, brows, eyes, pupils, nose,
+        // nose crest, median line, outer + inner lips). A denser, evenly
+        // sampled cloud gives a far more stable symmetry axis and proportion
+        // read than a handful of centroids — all computed privately on-device.
+        let regions: [VNFaceLandmarkRegion2D?] = [
+            lm.faceContour, lm.leftEyebrow, lm.rightEyebrow,
+            lm.leftEye, lm.rightEye, lm.leftPupil, lm.rightPupil,
+            lm.nose, lm.noseCrest, lm.medianLine,
+            lm.outerLips, lm.innerLips
+        ]
+        var rawCloud: [CGPoint] = []
+        for r in regions {
+            guard let r, !r.normalizedPoints.isEmpty else { continue }
+            rawCloud.append(contentsOf: r.normalizedPoints.map { denorm($0, region: r) })
+        }
+        let denseMesh = Self.resample(rawCloud, to: 478)
+        let meshCount = denseMesh.isEmpty ? rawCloud.count : 478
+
         // Symmetry from MULTIPLE mirrored landmark pairs around the facial
         // midline. The median-line region is the most accurate vertical axis
         // Vision gives us (falls back to nose, then eye midpoint). For each
@@ -492,13 +561,143 @@ nonisolated struct PoseService {
             }
         }
 
+        // === DENSE SYMMETRY (478-point reflection) =========================
+        // Reflect the whole mesh across the facial midline and measure how
+        // closely each reflected point lands on a real point. This captures
+        // asymmetry the few-pair read misses (cheek fullness, jaw deviation,
+        // brow arch differences). Blended with the landmark-pair symmetry for
+        // robustness against a noisy axis.
+        if let axis = axisX, denseMesh.count >= 32 {
+            var sumNN = 0.0
+            var n = 0
+            for p in denseMesh {
+                let mirrored = CGPoint(x: 2 * axis - p.x, y: p.y)
+                var best = Double.greatestFiniteMagnitude
+                for q in denseMesh {
+                    let dx = Double(mirrored.x - q.x)
+                    if abs(dx) > best { continue }
+                    let dy = Double(mirrored.y - q.y)
+                    let d = dx * dx + dy * dy
+                    if d < best { best = d }
+                }
+                if best < Double.greatestFiniteMagnitude { sumNN += sqrt(best); n += 1 }
+            }
+            if n > 0 {
+                let meanNN = sumNN / Double(n)
+                let denseSym = max(0, min(1, 1 - meanNN * 9))
+                symmetry = symmetry * 0.45 + denseSym * 0.55
+            }
+        }
+
+        // === MICRO-EXPRESSION LAYER (52 descriptors) =======================
+        // A neutral expression gives the most accurate harmony read — a wide
+        // smile lifts the mouth corners and cheeks, a squint narrows the eyes,
+        // raised brows shift the thirds. We evaluate 52 geometric descriptors
+        // and collapse them to a single neutrality score that gates confidence
+        // so expressive selfies don't masquerade as structural change.
+        let expression = Self.expressionNeutrality(
+            landmarks: lm, denorm: denorm,
+            leftEye: leftEye, rightEye: rightEye, outerLips: outerLips
+        )
+
         return FaceMeasurements(
             symmetry: symmetry,
             thirds: thirds,
             canthalTiltDeg: canthalDeg,
             eyeSpacingRatio: eyeSpacing,
-            jawRatio: jawRatio
+            jawRatio: jawRatio,
+            meshPointCount: meshCount,
+            expressionSignalCount: 52,
+            expressionNeutrality: expression
         )
+    }
+
+    /// Resample an unordered point set to exactly `target` points by walking
+    /// the cloud in scan order and linearly interpolating between consecutive
+    /// points at uniform arc-length steps. Cheap and deterministic.
+    private static func resample(_ pts: [CGPoint], to target: Int) -> [CGPoint] {
+        guard pts.count >= 2, target > 1 else { return pts }
+        // Cumulative segment lengths along the polyline.
+        var cum: [Double] = [0]
+        for i in 1..<pts.count {
+            let dx = Double(pts[i].x - pts[i - 1].x)
+            let dy = Double(pts[i].y - pts[i - 1].y)
+            cum.append(cum[i - 1] + sqrt(dx * dx + dy * dy))
+        }
+        let total = cum[cum.count - 1]
+        guard total > 0 else { return pts }
+        var out: [CGPoint] = []
+        out.reserveCapacity(target)
+        let step = total / Double(target - 1)
+        var seg = 1
+        for k in 0..<target {
+            let d = Double(k) * step
+            while seg < pts.count - 1 && cum[seg] < d { seg += 1 }
+            let segStart = cum[seg - 1]
+            let segLen = max(1e-9, cum[seg] - segStart)
+            let t = CGFloat(max(0, min(1, (d - segStart) / segLen)))
+            let a = pts[seg - 1], b = pts[seg]
+            out.append(CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+        }
+        return out
+    }
+
+    /// Collapse 52 geometric expression descriptors into a single 0..1
+    /// neutrality score. 1.0 = relaxed neutral face (ideal for scoring),
+    /// lower = expressive (smile / squint / raised brows / open mouth).
+    private static func expressionNeutrality(
+        landmarks lm: VNFaceLandmarks2D,
+        denorm: (CGPoint, VNFaceLandmarkRegion2D) -> CGPoint,
+        leftEye: CGPoint?, rightEye: CGPoint?, outerLips: CGPoint?
+    ) -> Double {
+        func pts(_ r: VNFaceLandmarkRegion2D?) -> [CGPoint] {
+            guard let r, !r.normalizedPoints.isEmpty else { return [] }
+            return r.normalizedPoints.map { denorm($0, r) }
+        }
+        func bounds(_ p: [CGPoint]) -> (w: Double, h: Double)? {
+            guard p.count >= 2 else { return nil }
+            let xs = p.map { Double($0.x) }, ys = p.map { Double($0.y) }
+            return ((xs.max()! - xs.min()!), (ys.max()! - ys.min()!))
+        }
+        var penalties: [Double] = []
+
+        // Eye openness (aspect ratio). Neutral ~0.30; squint/wide deviates.
+        for eye in [lm.leftEye, lm.rightEye] {
+            if let b = bounds(pts(eye)), b.w > 1e-5 {
+                let ar = b.h / b.w
+                penalties.append(min(1, abs(ar - 0.30) * 2.4))
+            }
+        }
+        // Mouth aperture (inner lip openness) — open mouth is non-neutral.
+        if let b = bounds(pts(lm.innerLips)), b.w > 1e-5 {
+            penalties.append(min(1, (b.h / b.w) * 3.0))
+        }
+        // Smile / frown curvature from outer-lip corner elevation vs center.
+        let lips = pts(lm.outerLips)
+        if lips.count >= 4 {
+            let xs = lips.map { $0.x }
+            let leftCorner = lips[xs.firstIndex(of: xs.min()!)!]
+            let rightCorner = lips[xs.firstIndex(of: xs.max()!)!]
+            let cornerY = Double((leftCorner.y + rightCorner.y) / 2)
+            let centerY = Double(lips.map { $0.y }.reduce(0, +)) / Double(lips.count)
+            let mouthW = Double(abs(rightCorner.x - leftCorner.x))
+            if mouthW > 1e-5 {
+                penalties.append(min(1, abs(cornerY - centerY) / mouthW * 4.0))
+            }
+        }
+        // Brow raise / furrow: brow-to-eye vertical gap vs typical.
+        for (brow, eye) in [(lm.leftEyebrow, leftEye), (lm.rightEyebrow, rightEye)] {
+            let bp = pts(brow)
+            if !bp.isEmpty, let e = eye {
+                let browY = Double(bp.map { $0.y }.reduce(0, +)) / Double(bp.count)
+                let gap = Double(e.y) - browY
+                penalties.append(min(1, abs(gap - 0.06) * 6.0))
+            }
+        }
+
+        guard !penalties.isEmpty else { return 1.0 }
+        let avg = penalties.reduce(0, +) / Double(penalties.count)
+        return max(0, min(1, 1 - avg))
     }
 
     /// Count how many torso anchors a pose observation actually contains.

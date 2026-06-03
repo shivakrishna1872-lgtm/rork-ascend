@@ -526,6 +526,8 @@ struct PhysiqueScanFlow: View {
             let avgTorso = PhotoFusion.fuse(sample(\.torsoAspect), default: 1.4)
             let avgLimbSym = PhotoFusion.fuse(sample(\.limbSymmetry), default: 0.9)
             let avgTilt = PhotoFusion.fuse(sample(\.shoulderTiltDeg), default: 0)
+            // Dense-silhouette muscularity proxy, fused across angles.
+            let avgMusIndex = PhotoFusion.fuse(sample(\.muscularityIndex), default: 0.5)
             let avgCov = PhotoFusion.fuse(sample(\.coverageY), default: 0)
             let avgConfPose = PhotoFusion.fuse(sample(\.confidenceAverage), default: 0)
             // Surface a confidence reason if angles disagree strongly on V-taper.
@@ -592,8 +594,13 @@ struct PhysiqueScanFlow: View {
                 let weighted = muscleWeightSum > 0.05
                     ? muscleParts.reduce(0) { $0 + $1.value * $1.weight } / muscleWeightSum
                     : (0.45 * vTaperComp + 0.20 * lowerComp + 0.20 * limbComp + 0.15 * buildComp)
+                // Anchor to the dense-silhouette muscularity index (multi-slice
+                // width profile) so the score reflects the full body outline,
+                // not just joint ratios. Blended 70/30 with the region read.
+                let silhouette100 = min(100, max(0, avgMusIndex * 100))
+                let blended = weighted * 0.70 + silhouette100 * 0.30
                 // Floor: any detected body has SOME musculature read — never 0.
-                return min(100, max(8, weighted))
+                return min(100, max(8, blended))
             }()
             // Conditioning correlates inversely with waist/shoulder ratio.
             let conditioningBase: Double = {

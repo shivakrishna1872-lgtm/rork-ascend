@@ -93,10 +93,15 @@ nonisolated struct DeterministicFaceScoring {
         // = 1.0. An expressive face (big smile / squint) distorts proportions,
         // so neutrality scales confidence down honestly rather than pretending
         // the read was structurally clean.
+        // Cross-check agreement: MediaPipe (primary) vs Apple Vision
+        // (independent verifier). When both engines agree on the geometry the
+        // read is trustworthy; when they diverge confidence drops honestly.
         let sampleBoost = min(1.0, Double(sampleCount) / 3.0)
-        let neutrality = measurements?.expressionNeutrality ?? 1.0
+        let neutrality = m.expressionNeutrality
+        let agreement = m.crossCheckAgreement
         let conf = clamp(
-            0.34 * sampleBoost + 0.30 * consistency + 0.21 * faceQuality + 0.15 * neutrality,
+            0.30 * sampleBoost + 0.25 * consistency + 0.18 * faceQuality
+                + 0.13 * neutrality + 0.14 * agreement,
             lo: 0, hi: 1
         )
 

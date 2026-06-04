@@ -36,6 +36,11 @@ nonisolated struct PoseResult {
     /// (shoulder/chest band vs waist + limb thickness). Anchors the physique
     /// muscularity score so it never collapses to a single ratio.
     var muscularityIndex: Double = 0.5
+    /// 0..1 agreement between the two independent body engines (MediaPipe 3-D
+    /// skeleton vs Apple Vision 2-D read). 1.0 = both engines landed on the
+    /// same body shape; lower = they disagreed, so the read is less certain.
+    /// MediaPipe stays authoritative — this only feeds confidence honesty.
+    var crossCheckAgreement: Double = 1.0
 
     enum DetectionSource: String {
         case pose, humanRect, personMask, saliency, brightness, none
@@ -84,6 +89,12 @@ nonisolated struct FaceMeasurements {
     /// 0..1 — how neutral the expression is. Big smiles, squints, raised brows
     /// distort proportions, so a non-neutral expression lowers confidence.
     var expressionNeutrality: Double = 1.0
+    /// 0..1 agreement between the two independent face engines (MediaPipe
+    /// 478-point mesh vs Apple Vision 76-point constellation). 1.0 = both
+    /// engines agree on the geometry; lower = they diverge, so the harmony
+    /// read is less certain. MediaPipe stays authoritative — this only feeds
+    /// confidence honesty.
+    var crossCheckAgreement: Double = 1.0
 
     var cacheKey: String {
         [symmetry, thirds, canthalTiltDeg, eyeSpacingRatio, jawRatio, expressionNeutrality]
@@ -117,7 +128,8 @@ nonisolated struct FaceMeasurements {
             jawRatio: trimmed(samples.map(\.jawRatio)),
             meshPointCount: samples.map(\.meshPointCount).max() ?? 76,
             expressionSignalCount: samples.map(\.expressionSignalCount).max() ?? 0,
-            expressionNeutrality: trimmed(samples.map(\.expressionNeutrality))
+            expressionNeutrality: trimmed(samples.map(\.expressionNeutrality)),
+            crossCheckAgreement: trimmed(samples.map(\.crossCheckAgreement))
         )
     }
 
@@ -331,15 +343,26 @@ nonisolated struct PoseService {
             muscularityIndex = muscularityIndex * 0.45 + maskMus * 0.55
         }
 
-        // === MEDIAPIPE 3-D POSE REFINEMENT ================================
-        // Apple Vision gives a flat 2-D 19-joint read. MediaPipe Pose adds a
-        // true 33-joint 3-D world skeleton (meters) with per-joint visibility,
-        // letting us measure shoulder breadth, limb girth and left/right
-        // balance in real depth. We blend its muscularity + symmetry into the
-        // existing read when it lands a confident detection.
+        // === MEDIAPIPE 3-D POSE (PRIMARY) + APPLE VISION CROSS-CHECK =======
+        // MediaPipe Pose is the MAIN engine: a true 33-joint 3-D world skeleton
+        // (meters) with per-joint visibility, measuring shoulder breadth, limb
+        // girth and left/right balance in real depth. Apple Vision's flat 2-D
+        // 19-joint read (computed above) becomes an independent CROSS-CHECK
+        // that verifies the MediaPipe result rather than an equal partner.
+        // When the two engines agree, confidence is high; when they diverge we
+        // record lower agreement (feeds confidence honesty) — but MediaPipe
+        // stays authoritative and dominates the blend.
+        var crossCheckAgreement: Double = 1.0
         if let mp = await MediaPipeService.shared.analyzePose(image), mp.confidence > 0.3 {
-            muscularityIndex = muscularityIndex * 0.4 + mp.muscularityIndex * 0.6
-            symmetry = symmetry * 0.5 + mp.symmetry * 0.5
+            let visionMus = muscularityIndex
+            let visionSym = symmetry
+            // MediaPipe leads (0.7 / 0.65); Vision only nudges.
+            muscularityIndex = mp.muscularityIndex * 0.7 + visionMus * 0.3
+            symmetry = mp.symmetry * 0.65 + visionSym * 0.35
+            // How closely the independent Vision read matches MediaPipe.
+            let musAgree = max(0, 1 - abs(mp.muscularityIndex - visionMus) / 0.5)
+            let symAgree = max(0, 1 - abs(mp.symmetry - visionSym) / 0.4)
+            crossCheckAgreement = max(0, min(1, (musAgree + symAgree) / 2))
             // Surface the true 3-D joints alongside the 2-D silhouette density.
             landmarkDensity += mp.jointCount
         }
@@ -374,7 +397,8 @@ nonisolated struct PoseService {
             issues: issues,
             detectionSource: .pose,
             landmarkDensity: landmarkDensity,
-            muscularityIndex: muscularityIndex
+            muscularityIndex: muscularityIndex,
+            crossCheckAgreement: crossCheckAgreement
         )
     }
 
@@ -448,14 +472,36 @@ nonisolated struct PoseService {
     /// line, and inner + outer lips. More anchors → a more stable, accurate
     /// symmetry axis and proportion read, all computed privately on-device.
     func analyzeFace(_ image: UIImage) async -> FaceMeasurements? {
-        // Primary path: Google MediaPipe Face Landmarker — a true 478-point 3-D
-        // face mesh plus 52 expression blendshape coefficients, all on-device.
-        // This is the density the user asked for and far exceeds Vision's 76
-        // constellation. Falls back to Apple Vision only if MediaPipe is
-        // unavailable (model missing / no face found).
-        if let mp = await MediaPipeService.shared.analyzeFace(image) {
-            return mp.measurements
+        // PRIMARY: Google MediaPipe Face Landmarker — a true 478-point 3-D face
+        // mesh plus 52 expression blendshape coefficients, all on-device. This
+        // is the main engine and always drives the geometry.
+        //
+        // CROSS-CHECK: Apple Vision's 76-point constellation runs alongside,
+        // independently, purely to verify the MediaPipe read. When the two
+        // engines agree, confidence is high; when they diverge we lower
+        // cross-check agreement (which feeds confidence) — but MediaPipe's
+        // numbers are never overridden. Vision only becomes primary if
+        // MediaPipe is unavailable (model missing / no mesh found).
+        let mpResult = await MediaPipeService.shared.analyzeFace(image)
+        let visionMeasurements = visionFaceMeasurements(image)
+
+        if var primary = mpResult?.measurements {
+            if let v = visionMeasurements {
+                primary.crossCheckAgreement = Self.faceAgreement(primary, v)
+            } else {
+                // No independent second opinion available — mild honesty penalty.
+                primary.crossCheckAgreement = 0.7
+            }
+            return primary
         }
+        return visionMeasurements
+    }
+
+    /// Apple Vision face read (76-point constellation, densified to a 478-point
+    /// mesh by arc-length interpolation). Used as the primary read only when
+    /// MediaPipe is unavailable; otherwise it serves as the independent
+    /// cross-check for the MediaPipe result.
+    private func visionFaceMeasurements(_ image: UIImage) -> FaceMeasurements? {
         guard let cg = image.cgImage else { return nil }
         let request = VNDetectFaceLandmarksRequest()
         // Request the maximum-density landmark constellation Vision offers.
@@ -658,6 +704,23 @@ nonisolated struct PoseService {
             expressionSignalCount: 52,
             expressionNeutrality: expression
         )
+    }
+
+    /// Cross-check agreement (0..1) between two independent facial reads
+    /// (MediaPipe 478-point mesh vs Apple Vision constellation). 1.0 = the
+    /// engines land on the same geometry; lower = they disagree, so the
+    /// harmony score is reported as less certain. This never alters the
+    /// MediaPipe numbers — it only feeds the confidence calculation.
+    private static func faceAgreement(_ a: FaceMeasurements, _ b: FaceMeasurements) -> Double {
+        func close(_ x: Double, _ y: Double, scale: Double) -> Double {
+            max(0, 1 - abs(x - y) / scale)
+        }
+        let sym = close(a.symmetry, b.symmetry, scale: 0.5)
+        let thirds = close(a.thirds, b.thirds, scale: 0.5)
+        let canthal = close(a.canthalTiltDeg, b.canthalTiltDeg, scale: 12)
+        let eye = close(a.eyeSpacingRatio, b.eyeSpacingRatio, scale: 0.6)
+        let jaw = close(a.jawRatio, b.jawRatio, scale: 0.4)
+        return max(0, min(1, (sym + thirds + canthal + eye + jaw) / 5))
     }
 
     /// Resample an unordered point set to exactly `target` points by walking

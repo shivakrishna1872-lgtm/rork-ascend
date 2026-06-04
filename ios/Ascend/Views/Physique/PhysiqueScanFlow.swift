@@ -674,6 +674,14 @@ struct PhysiqueScanFlow: View {
             if svtDispersion > 0.18 && detectedPoses.count >= 2 {
                 reasons.append("Angles disagreed on body shape — used the most confident shots.")
             }
+            // Cross-engine verification: MediaPipe (primary) vs Apple Vision.
+            // If the two body engines disagreed, say so plainly.
+            let avgCrossCheck = detectedPoses.isEmpty
+                ? 1.0
+                : detectedPoses.map { $0.crossCheckAgreement }.reduce(0, +) / Double(detectedPoses.count)
+            if avgCrossCheck < 0.6 {
+                reasons.append("The two body-detection engines disagreed slightly — kept the consistent signals.")
+            }
 
             // === CALIBRATION CARD (optional reference for real-world cm) ==========
             // Looks for a credit-card or A4-shaped rectangle in the front photo.

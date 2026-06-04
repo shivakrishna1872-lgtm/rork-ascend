@@ -828,7 +828,13 @@ struct WireframeOverlay: View {
                             ("right_hip_joint","right_knee_joint"),
                             ("right_knee_joint","right_ankle_joint"),
                             ("neck_1_joint","left_shoulder_joint"),
-                            ("neck_1_joint","right_shoulder_joint")
+                            ("neck_1_joint","right_shoulder_joint"),
+                            ("left_wrist_joint","left_index_joint"),
+                            ("right_wrist_joint","right_index_joint"),
+                            ("left_ankle_joint","left_heel_joint"),
+                            ("left_heel_joint","left_foot_index_joint"),
+                            ("right_ankle_joint","right_heel_joint"),
+                            ("right_heel_joint","right_foot_index_joint")
                         ]
                         for (a, b) in edges {
                             if let pa = pose.landmarks[a], let pb = pose.landmarks[b] {

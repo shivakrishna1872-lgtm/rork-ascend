@@ -322,29 +322,55 @@ actor MediaPipeService {
         // MediaPipe BlazePose 33-joint topology → Vision-compatible names so
         // the existing physique math can consume them directly.
         func n(_ i: Int) -> CGPoint { CGPoint(x: CGFloat(norm[i].x), y: CGFloat(norm[i].y)) }
+        // Full BlazePose 33-joint topology mapped to Vision-compatible names so
+        // the existing physique math can consume every joint directly. Beyond
+        // the core torso/limb joints we now also surface the face detail points,
+        // both hands (pinky / index / thumb) and both feet (heel / foot index)
+        // — the complete skeleton, not a 17-joint subset.
         var landmarks: [String: CGPoint] = [
             "nose_joint": n(0),
+            "left_eye_inner_joint": n(1),
             "left_eye_joint": n(2),
+            "left_eye_outer_joint": n(3),
+            "right_eye_inner_joint": n(4),
             "right_eye_joint": n(5),
+            "right_eye_outer_joint": n(6),
             "left_ear_joint": n(7),
             "right_ear_joint": n(8),
+            "mouth_left_joint": n(9),
+            "mouth_right_joint": n(10),
             "left_shoulder_joint": n(11),
             "right_shoulder_joint": n(12),
             "left_elbow_joint": n(13),
             "right_elbow_joint": n(14),
             "left_wrist_joint": n(15),
             "right_wrist_joint": n(16),
+            "left_pinky_joint": n(17),
+            "right_pinky_joint": n(18),
+            "left_index_joint": n(19),
+            "right_index_joint": n(20),
+            "left_thumb_joint": n(21),
+            "right_thumb_joint": n(22),
             "left_hip_joint": n(23),
             "right_hip_joint": n(24),
             "left_knee_joint": n(25),
             "right_knee_joint": n(26),
             "left_ankle_joint": n(27),
-            "right_ankle_joint": n(28)
+            "right_ankle_joint": n(28),
+            "left_heel_joint": n(29),
+            "right_heel_joint": n(30),
+            "left_foot_index_joint": n(31),
+            "right_foot_index_joint": n(32)
         ]
         // Pelvis center as a robust root anchor.
         landmarks["root_joint"] = CGPoint(
             x: (landmarks["left_hip_joint"]!.x + landmarks["right_hip_joint"]!.x) / 2,
             y: (landmarks["left_hip_joint"]!.y + landmarks["right_hip_joint"]!.y) / 2
+        )
+        // Neck = midpoint of the shoulder line (drives the wireframe + posture).
+        landmarks["neck_1_joint"] = CGPoint(
+            x: (landmarks["left_shoulder_joint"]!.x + landmarks["right_shoulder_joint"]!.x) / 2,
+            y: (landmarks["left_shoulder_joint"]!.y + landmarks["right_shoulder_joint"]!.y) / 2
         )
 
         // Average visibility as a confidence proxy.
@@ -365,8 +391,15 @@ actor MediaPipeService {
         let shoulderBreadth = dist3(11, 12)
         let hipBreadth = dist3(23, 24)
         let upperArm = (dist3(11, 13) + dist3(12, 14)) / 2
+        let forearm = (dist3(13, 15) + dist3(14, 16)) / 2
         let thigh = (dist3(23, 25) + dist3(24, 26)) / 2
+        let shin = (dist3(25, 27) + dist3(26, 28)) / 2
         let torsoLen = (dist3(11, 23) + dist3(12, 24)) / 2
+        // Hand span (wrist→index) and foot length (heel→foot-index) — extra
+        // joints that anchor true limb scale in meters and stabilise the
+        // arm/leg girth proxies against foreshortening.
+        let handSpan = (dist3(15, 19) + dist3(16, 20)) / 2
+        let footLen = (dist3(29, 31) + dist3(30, 32)) / 2
 
         // V-taper: shoulder breadth vs hip breadth.
         let taper = hipBreadth > 0.01 ? shoulderBreadth / hipBreadth : 1.3
@@ -374,8 +407,14 @@ actor MediaPipeService {
         // more developed upper body. Limb segments anchor overall mass.
         let taperScore = max(0, min(1, (taper - 1.0) / 0.7))
         let frameScore = torsoLen > 0.01 ? max(0, min(1, (shoulderBreadth / torsoLen - 0.7) / 0.6)) : 0.4
-        let limbScore = max(0, min(1, ((upperArm + thigh) / max(0.01, torsoLen) - 0.9) / 0.8))
-        let muscularity = max(0.08, min(1, 0.5 * taperScore + 0.3 * frameScore + 0.2 * limbScore))
+        // Full-limb mass: upper arm + forearm + thigh + shin relative to torso.
+        let limbTotal = upperArm + forearm + thigh + shin
+        let limbScore = max(0, min(1, (limbTotal / max(0.01, torsoLen) - 1.9) / 1.6))
+        // Distal scale: hand + foot length vs torso — bigger extremities track
+        // larger overall frame/bone structure.
+        let distalScore = max(0, min(1, ((handSpan + footLen) / max(0.01, torsoLen) - 0.25) / 0.35))
+        let muscularity = max(0.08, min(1,
+            0.44 * taperScore + 0.26 * frameScore + 0.20 * limbScore + 0.10 * distalScore))
 
         // --- Symmetry from mirrored 3-D limb segment lengths.
         var diffs: [Double] = []
@@ -385,8 +424,10 @@ actor MediaPipeService {
         }
         sym(11, 13, 12, 14) // upper arm
         sym(13, 15, 14, 16) // forearm
+        sym(15, 19, 16, 20) // hand
         sym(23, 25, 24, 26) // thigh
         sym(25, 27, 26, 28) // shin
+        sym(27, 31, 28, 32) // foot
         let symmetry: Double = diffs.isEmpty
             ? 0.9
             : max(0, min(1, 1 - (diffs.reduce(0, +) / Double(diffs.count)) * 2.5))

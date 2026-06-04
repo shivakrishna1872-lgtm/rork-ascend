@@ -331,6 +331,19 @@ nonisolated struct PoseService {
             muscularityIndex = muscularityIndex * 0.45 + maskMus * 0.55
         }
 
+        // === MEDIAPIPE 3-D POSE REFINEMENT ================================
+        // Apple Vision gives a flat 2-D 19-joint read. MediaPipe Pose adds a
+        // true 33-joint 3-D world skeleton (meters) with per-joint visibility,
+        // letting us measure shoulder breadth, limb girth and left/right
+        // balance in real depth. We blend its muscularity + symmetry into the
+        // existing read when it lands a confident detection.
+        if let mp = await MediaPipeService.shared.analyzePose(image), mp.confidence > 0.3 {
+            muscularityIndex = muscularityIndex * 0.4 + mp.muscularityIndex * 0.6
+            symmetry = symmetry * 0.5 + mp.symmetry * 0.5
+            // Surface the true 3-D joints alongside the 2-D silhouette density.
+            landmarkDensity += mp.jointCount
+        }
+
         // Ultra-lenient quality checks — only flag completely broken captures.
         // Partial bodies, occluded faces (phone in front of face / mirror selfie),
         // off-center framing, and imperfect lighting all pass. As long as torso
@@ -435,6 +448,14 @@ nonisolated struct PoseService {
     /// line, and inner + outer lips. More anchors → a more stable, accurate
     /// symmetry axis and proportion read, all computed privately on-device.
     func analyzeFace(_ image: UIImage) async -> FaceMeasurements? {
+        // Primary path: Google MediaPipe Face Landmarker — a true 478-point 3-D
+        // face mesh plus 52 expression blendshape coefficients, all on-device.
+        // This is the density the user asked for and far exceeds Vision's 76
+        // constellation. Falls back to Apple Vision only if MediaPipe is
+        // unavailable (model missing / no face found).
+        if let mp = await MediaPipeService.shared.analyzeFace(image) {
+            return mp.measurements
+        }
         guard let cg = image.cgImage else { return nil }
         let request = VNDetectFaceLandmarksRequest()
         // Request the maximum-density landmark constellation Vision offers.

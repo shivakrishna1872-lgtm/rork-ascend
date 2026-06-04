@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		XX2B0AFBFC7C8DACCF3CCFXX /* SwiftTasksVision in Frameworks */ = {isa = PBXBuildFile; productRef = XX1648780991986A73B340XX /* SwiftTasksVision */; };
 		XX2BC05977FF791DB5D38FXX /* AetherWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = XX86F07473E86722300156XX /* AetherWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -65,37 +66,12 @@
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		105FC57C2E9EAD3100EA8BCF /* Ascend */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Ascend;
-			sourceTree = "<group>";
-		};
-		105FC58C2E9EAD3200EA8BCF /* AscendTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = AscendTests;
-			sourceTree = "<group>";
-		};
-		105FC5962E9EAD3200EA8BCF /* AscendUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = AscendUITests;
-			sourceTree = "<group>";
-		};
-		XX04A85B99C9487B82815CXX /* AetherWidgets */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				XXD807EFCD959641244593XX /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
-			);
-			path = AetherWidgets;
-			sourceTree = "<group>";
-		};
-/* End PBXFileSystemSynchronizedRootGroup section */
-
 /* Begin PBXFrameworksBuildPhase section */
 		105FC5772E9EAD3100EA8BCF /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				XX2B0AFBFC7C8DACCF3CCFXX /* SwiftTasksVision in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +97,32 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		105FC57C2E9EAD3100EA8BCF /* Ascend */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Ascend;
+			sourceTree = "<group>";
+		};
+		105FC58C2E9EAD3200EA8BCF /* AscendTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AscendTests;
+			sourceTree = "<group>";
+		};
+		105FC5962E9EAD3200EA8BCF /* AscendUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AscendUITests;
+			sourceTree = "<group>";
+		};
+		XX04A85B99C9487B82815CXX /* AetherWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				XXD807EFCD959641244593XX /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
+			path = AetherWidgets;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXGroup section */
 		105FC5712E9EAD3100EA8BCF = {
@@ -167,6 +169,7 @@
 			);
 			name = Ascend;
 			packageProductDependencies = (
+				XX1648780991986A73B340XX /* SwiftTasksVision */,
 			);
 			productName = Ascend;
 			productReference = 105FC57A2E9EAD3100EA8BCF /* Ascend.app */;
@@ -280,6 +283,9 @@
 				105FC5882E9EAD3200EA8BCF /* AscendTests */,
 				105FC5922E9EAD3200EA8BCF /* AscendUITests */,
 				XX9D12DFCEEA04B6236B69XX /* AscendWidgets */,
+			);
+			packageReferences = (
+				XX46051F2B9906F1FEB732XX /* XCRemoteSwiftPackageReference "SwiftTasksVision" */,
 			);
 		};
 /* End PBXProject section */
@@ -747,6 +753,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		XX46051F2B9906F1FEB732XX /* XCRemoteSwiftPackageReference "SwiftTasksVision" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = https://github.com/paescebu/SwiftTasksVision.git;
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.10.21;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		XX1648780991986A73B340XX /* SwiftTasksVision */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = XX46051F2B9906F1FEB732XX /* XCRemoteSwiftPackageReference "SwiftTasksVision" */;
+			productName = SwiftTasksVision;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 105FC5722E9EAD3100EA8BCF /* Project object */;
 }

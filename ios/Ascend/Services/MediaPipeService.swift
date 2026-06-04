@@ -15,6 +15,22 @@ nonisolated struct MediaPipeFaceResult {
     let blendshapeCount: Int
 }
 
+/// Facial-adiposity cross-signal derived from the Google MediaPipe 478-point
+/// face mesh. Facial fullness — cheek/jaw width relative to face height plus a
+/// lower-face roundness read — is a documented correlate of overall body fat.
+/// Used purely as an INDEPENDENT cross-check for the physique body-fat /
+/// conditioning estimate, never as the sole source.
+nonisolated struct MediaPipeFaceAdiposity {
+    /// 0..1 — higher = fuller / softer face (more adiposity).
+    let adiposityIndex: Double
+    /// Body-fat % estimate implied by facial fullness alone (clamped 6–38).
+    let impliedBodyFatPercent: Double
+    /// Number of mesh points the read was computed over (478).
+    let meshPointCount: Int
+    /// 0..1 — higher = leaner / sharper facial definition.
+    var leannessIndex: Double { max(0, min(1, 1 - adiposityIndex)) }
+}
+
 /// Dense body geometry produced by Google MediaPipe Pose Landmarker.
 /// 33 landmarks with real 3-D world coordinates (meters) + per-joint
 /// visibility — a true depth-aware skeleton, unlike a flat 2-D read.
@@ -213,6 +229,60 @@ actor MediaPipeService {
             measurements: measurements,
             meshPointCount: pts.count,
             blendshapeCount: 52
+        )
+    }
+
+    /// Read facial adiposity from the 478-point face mesh on a (front) physique
+    /// photo. Combines facial width-to-height ratio, lower-face (jaw/cheek)
+    /// roundness, and cheek fullness — all robust correlates of body fat — into
+    /// a single 0..1 index plus an implied body-fat %. Returns nil when no face
+    /// is visible (e.g. a back/side shot), so the caller can ignore it cleanly.
+    func analyzeFacialAdiposity(_ image: UIImage) -> MediaPipeFaceAdiposity? {
+        guard let landmarker = ensureFaceLandmarker(),
+              let mpImage = try? MPImage(uiImage: image),
+              let result = try? landmarker.detect(image: mpImage),
+              let mesh = result.faceLandmarks.first, mesh.count >= 400 else {
+            return nil
+        }
+        let pts: [CGPoint] = mesh.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) }
+        func p(_ i: Int) -> CGPoint? { i >= 0 && i < pts.count ? pts[i] : nil }
+        func dist(_ a: CGPoint, _ b: CGPoint) -> Double {
+            let dx = Double(a.x - b.x), dy = Double(a.y - b.y)
+            return (dx * dx + dy * dy).squareRoot()
+        }
+
+        // Canonical MediaPipe Face Mesh indices.
+        guard let foreheadTop = p(10), let chin = p(152),
+              let cheekL = p(234), let cheekR = p(454),   // bizygomatic (widest)
+              let jawL = p(172), let jawR = p(397),        // gonial (jaw) width
+              let midCheekL = p(50), let midCheekR = p(280) // mid-cheek fullness
+        else { return nil }
+
+        let faceHeight = dist(foreheadTop, chin)
+        guard faceHeight > 0.001 else { return nil }
+        let bizygomatic = dist(cheekL, cheekR)
+        let jawWidth = dist(jawL, jawR)
+        let cheekFullness = dist(midCheekL, midCheekR)
+
+        // 1) Facial width-to-height ratio (fWHR). Higher = rounder/fuller face.
+        //    Lean ≈ 0.82, average ≈ 0.95, high adiposity ≈ 1.10+.
+        let fWHR = bizygomatic / faceHeight
+        let whrScore = max(0, min(1, (fWHR - 0.80) / 0.34))
+        // 2) Lower-face roundness: jaw width relative to cheekbone width. A sharp
+        //    (lean) jaw tapers in; a fuller face keeps width down to the jaw.
+        let jawRound = bizygomatic > 0.001 ? jawWidth / bizygomatic : 0.7
+        let jawScore = max(0, min(1, (jawRound - 0.62) / 0.28))
+        // 3) Cheek fullness relative to face height.
+        let cheekScore = max(0, min(1, (cheekFullness / faceHeight - 0.55) / 0.30))
+
+        let adiposity = max(0, min(1, 0.45 * whrScore + 0.35 * jawScore + 0.20 * cheekScore))
+        // Map leanness → BF%: a razor-sharp face ≈ 7%, a very full face ≈ 36%.
+        let impliedBF = 7 + adiposity * 29
+
+        return MediaPipeFaceAdiposity(
+            adiposityIndex: adiposity,
+            impliedBodyFatPercent: impliedBF,
+            meshPointCount: pts.count
         )
     }
 

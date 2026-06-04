@@ -542,7 +542,23 @@ struct PhysiqueScanFlow: View {
             // Map waist/shoulder ratio into BF adjustment: 0.75 ≈ lean (−4),
             // 0.85 ≈ baseline (0), 0.95 ≈ +5, 1.05+ ≈ +9.
             let waistAdj = (avgWaist - 0.85) * 50
-            let navyBF = max(5, min(42, bmiBF * 0.55 + (bmiBF + waistAdj) * 0.45))
+            var navyBF = max(5, min(42, bmiBF * 0.55 + (bmiBF + waistAdj) * 0.45))
+
+            // === FACIAL-ADIPOSITY CROSS-CHECK (478-point MediaPipe mesh) ==========
+            // The front physique shot almost always includes the face. We read
+            // the 478-point MediaPipe face mesh for facial fullness (width-to-
+            // height ratio, jaw roundness, cheek fullness) — a documented
+            // correlate of body fat — and use the implied BF% as an INDEPENDENT
+            // second opinion that gently refines the body-composition estimate.
+            // It never overrides the body read; it only nudges (25% weight) and
+            // surfaces a note when the face and body disagree.
+            let faceAdiposity = await MediaPipeService.shared.analyzeFacialAdiposity(f)
+            var faceConditioningSignal: Double? = nil
+            if let fa = faceAdiposity {
+                let blended = navyBF * 0.75 + fa.impliedBodyFatPercent * 0.25
+                navyBF = max(5, min(42, blended))
+                faceConditioningSignal = fa.leannessIndex
+            }
 
             let anchors = PhysiqueAnchors(
                 symmetry: avgSym,
@@ -611,8 +627,16 @@ struct PhysiqueScanFlow: View {
                 return max(35, 55 - (r - 0.90) * 200)
             }()
             // Conditioning relies on torso + hips visibility; obstruction pulls it down.
-            let conditioning = conditioningBase * (0.5 * wTorso + 0.5 * wHips) +
+            var conditioning = conditioningBase * (0.5 * wTorso + 0.5 * wHips) +
                                conditioningBase * (1 - (0.5 * wTorso + 0.5 * wHips)) * 0.6
+            // Facial leanness (478-point mesh) refines conditioning slightly: a
+            // sharp, lean face corroborates low body fat, a fuller face tempers
+            // an over-optimistic body read. Bounded ±6 points, 20% influence.
+            if let lean = faceConditioningSignal {
+                let faceConditioning = 40 + lean * 55   // 0..1 → 40..95
+                let nudge = max(-6, min(6, (faceConditioning - conditioning) * 0.20))
+                conditioning = max(0, min(100, conditioning + nudge))
+            }
             // Composite — deterministic score, then a controlled partiality penalty
             // so a full-body scan and an upper-body-only scan don't claim parity.
             let partialityPenalty: Double = {
@@ -681,6 +705,11 @@ struct PhysiqueScanFlow: View {
                 : detectedPoses.map { $0.crossCheckAgreement }.reduce(0, +) / Double(detectedPoses.count)
             if avgCrossCheck < 0.6 {
                 reasons.append("The two body-detection engines disagreed slightly — kept the consistent signals.")
+            }
+            // Face-vs-body adiposity cross-check: flag a notable disagreement so
+            // the body-fat number is reported honestly.
+            if let fa = faceAdiposity, abs(fa.impliedBodyFatPercent - navyBF) > 8 {
+                reasons.append("Facial leanness and body composition disagreed slightly — blended both reads.")
             }
 
             // === CALIBRATION CARD (optional reference for real-world cm) ==========

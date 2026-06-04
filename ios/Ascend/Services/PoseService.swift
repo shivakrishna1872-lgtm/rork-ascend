@@ -40,6 +40,33 @@ nonisolated struct PoseResult {
     enum DetectionSource: String {
         case pose, humanRect, personMask, saliency, brightness, none
     }
+
+    /// True only when an ACTUAL human body was detected — not merely a
+    /// readable/bright image. This is the gate that prevents the physique
+    /// scan from scoring photos of empty rooms, walls, or objects.
+    ///
+    /// - `.pose`: requires real torso anchors (shoulders OR hips) with usable
+    ///   confidence, so a single stray low-confidence joint doesn't count.
+    /// - `.humanRect`: Vision's body rectangle must be reasonably confident and
+    ///   occupy a meaningful slice of the frame.
+    /// - `.personMask`: the person-segmentation silhouette must cover a real
+    ///   portion of the image.
+    /// - `.saliency` / `.brightness` / `.none`: never a body.
+    var isRealBody: Bool {
+        switch detectionSource {
+        case .pose:
+            let hasShoulders = landmarks["left_shoulder_joint"] != nil && landmarks["right_shoulder_joint"] != nil
+            let hasHips = landmarks["left_hip_joint"] != nil && landmarks["right_hip_joint"] != nil
+            return (hasShoulders || hasHips) && confidenceAverage > 0.15
+        case .humanRect:
+            return confidenceAverage > 0.45 && coverageY > 0.18
+        case .personMask:
+            // coverageY is stored as mask coverage * 1.6, so 0.18 ≈ 11% of frame.
+            return coverageY > 0.18
+        case .saliency, .brightness, .none:
+            return false
+        }
+    }
 }
 
 nonisolated struct FaceMeasurements {

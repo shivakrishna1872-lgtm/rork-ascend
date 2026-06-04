@@ -439,18 +439,16 @@ struct PhysiqueScanFlow: View {
             async let backPose = cachedAnalyze(b)
             let poses: [PoseResult?] = await [frontPose, sidePose, backPose]
 
-            // A pose counts as "body detected" if Vision returned ANY landmark
-            // or the image has reasonable brightness (silhouette fallback path).
-            // Mirror selfies, partial framing, and weird lighting all pass here.
-            let landmarkHit = poses.contains { ($0?.landmarks.isEmpty == false) }
-            let confidenceHit = poses.contains { ($0?.confidenceAverage ?? 0) > 0.02 }
-            let brightnessHit = poses.contains { p in
-                let b = p?.brightness ?? 0
-                return b > 0.04 && b < 0.99
-            }
-            let bodyDetected = landmarkHit || confidenceHit || brightnessHit
+            // A photo counts ONLY when an ACTUAL human body is detected — pose
+            // joints (shoulders/hips), a confident human rectangle, or a
+            // person-segmentation silhouette covering a real part of the frame.
+            // Brightness or a merely "readable" image is NOT a body, so photos
+            // of empty rooms, walls, or objects no longer produce a score.
+            // Mirror selfies and partial framing still pass via the pose path.
+            let realBodyCount = poses.compactMap { $0 }.filter { $0.isRealBody }.count
+            let bodyDetected = realBodyCount >= 1
 
-            // GUARD: only fail if every photo is totally unreadable (black / blown out).
+            // GUARD: fail when none of the photos actually contain a body.
             if !bodyDetected {
                 try? await Task.sleep(for: .seconds(0.6))
                 let zero = PhysiqueScanRecord(
@@ -467,7 +465,7 @@ struct PhysiqueScanFlow: View {
                         "Stand a few feet from the camera so your torso is visible.",
                         "Soft, even lighting on the body works best."
                     ],
-                    insight: "No body detected in your photos — add clearer shots showing your physique to score.",
+                    insight: "No body detected in your photos — make sure your full or upper body is clearly in frame, then scan again.",
                     frontImageData: nil,
                     sideImageData: nil,
                     backImageData: nil
@@ -485,7 +483,9 @@ struct PhysiqueScanFlow: View {
 
             // 2) Body confirmed → run the AI analysis anchored to detected on-device measurements.
             //    Compute aggregated pose anchors so the model can lean on them.
-            let detectedPoses = poses.compactMap { $0 }
+            //    Only REAL body detections feed scoring — brightness/empty
+            //    fallbacks never contaminate the aggregate.
+            let detectedPoses = poses.compactMap { $0 }.filter { $0.isRealBody }
 
             // === PARTIALITY (region-aware scoring) ================================
             // Classify each pose's body completeness, then pick the worst across

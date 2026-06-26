@@ -42,6 +42,12 @@ nonisolated struct CachedBodyAnchors: Codable, Sendable {
     let detectionSource: String
     let landmarks: [String: [Double]] // x,y pairs — landmark order normalized
     let engineVersion: String
+    // Optional for backward-compat with older cache files (decoded as nil).
+    // Without these, a cached pose used to fall back to muscularityIndex 0.5,
+    // which flattened the physique muscularity read on every cache hit.
+    let muscularityIndex: Double?
+    let landmarkDensity: Int?
+    let crossCheckAgreement: Double?
 }
 
 nonisolated struct CachedFaceAnchors: Codable, Sendable {
@@ -355,6 +361,9 @@ extension CachedBodyAnchors {
         self.detectionSource = p.detectionSource.rawValue
         self.landmarks = map
         self.engineVersion = engineVersion
+        self.muscularityIndex = p.muscularityIndex
+        self.landmarkDensity = p.landmarkDensity
+        self.crossCheckAgreement = p.crossCheckAgreement
     }
 
     var pose: PoseResult {
@@ -376,7 +385,10 @@ extension CachedBodyAnchors {
             limbSymmetry: limbSymmetry,
             shoulderTiltDeg: shoulderTiltDeg,
             issues: [],
-            detectionSource: PoseResult.DetectionSource(rawValue: detectionSource) ?? .none
+            detectionSource: PoseResult.DetectionSource(rawValue: detectionSource) ?? .none,
+            landmarkDensity: landmarkDensity ?? 19,
+            muscularityIndex: muscularityIndex ?? 0.5,
+            crossCheckAgreement: crossCheckAgreement ?? 1.0
         )
     }
 }

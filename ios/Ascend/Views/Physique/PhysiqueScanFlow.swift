@@ -554,10 +554,17 @@ struct PhysiqueScanFlow: View {
             // surfaces a note when the face and body disagree.
             let faceAdiposity = await MediaPipeService.shared.analyzeFacialAdiposity(f)
             var faceConditioningSignal: Double? = nil
+            // 478-mesh facial leanness, gated by 52-blendshape expression
+            // neutrality, used as a SMALL refining signal for muscularity
+            // (a leaner, more defined face corroborates more visible muscle).
+            var faceMuscleSignal: Double? = nil
             if let fa = faceAdiposity {
-                let blended = navyBF * 0.75 + fa.impliedBodyFatPercent * 0.25
+                // Trust the facial read more when the face is relaxed/neutral.
+                let trust = 0.4 + 0.6 * fa.expressionNeutrality
+                let blended = navyBF * (1 - 0.25 * trust) + fa.impliedBodyFatPercent * (0.25 * trust)
                 navyBF = max(5, min(42, blended))
                 faceConditioningSignal = fa.leannessIndex
+                faceMuscleSignal = fa.leannessIndex * fa.expressionNeutrality
             }
 
             let anchors = PhysiqueAnchors(
@@ -607,17 +614,33 @@ struct PhysiqueScanFlow: View {
             ]
             let muscleWeightSum = muscleParts.reduce(0) { $0 + $1.weight }
             let muscularity: Double = {
-                let weighted = muscleWeightSum > 0.05
+                let weightedRaw = muscleWeightSum > 0.05
                     ? muscleParts.reduce(0) { $0 + $1.value * $1.weight } / muscleWeightSum
                     : (0.45 * vTaperComp + 0.20 * lowerComp + 0.20 * limbComp + 0.15 * buildComp)
+                // Degenerate guard: if any upstream measurement produced a
+                // non-finite value, fall back to the silhouette read alone so
+                // the metric never collapses to a blank/NaN.
+                let weighted = weightedRaw.isFinite ? weightedRaw : (avgMusIndex * 100)
                 // Anchor to the dense-silhouette muscularity index (multi-slice
-                // width profile) so the score reflects the full body outline,
-                // not just joint ratios. Blended 70/30 with the region read.
-                let silhouette100 = min(100, max(0, avgMusIndex * 100))
-                let blended = weighted * 0.70 + silhouette100 * 0.30
+                // width profile + MediaPipe 33-joint 3-D skeleton) so the score
+                // reflects the full body outline, not just joint ratios.
+                let silhouette100 = min(100, max(0, (avgMusIndex.isFinite ? avgMusIndex : 0.5) * 100))
+                var blended = weighted * 0.70 + silhouette100 * 0.30
+                // 478-mesh facial-definition refinement (52-blendshape gated):
+                // a sharp, lean face nudges muscularity up; a soft/full face
+                // tempers an over-optimistic body read. Bounded ±5, 20% pull.
+                if let leanSignal = faceMuscleSignal {
+                    let faceMuscle = 35 + leanSignal * 55   // 0..1 → 35..90
+                    let nudge = max(-5, min(5, (faceMuscle - blended) * 0.20))
+                    blended += nudge
+                }
                 // Floor: any detected body has SOME musculature read — never 0.
-                return min(100, max(8, blended))
+                let final = min(100, max(8, blended))
+                return final.isFinite ? final : 8
             }()
+            #if DEBUG
+            print("[Physique] muscularity=\(muscularity) vTaper=\(vTaperComp) lower=\(lowerComp) limb=\(limbComp) build=\(buildComp) silhouette=\(avgMusIndex) faceMuscle=\(faceMuscleSignal.map { String($0) } ?? "nil")")
+            #endif
             // Conditioning correlates inversely with waist/shoulder ratio.
             let conditioningBase: Double = {
                 let r = anchors.waistShoulderRatio

@@ -27,6 +27,10 @@ nonisolated struct MediaPipeFaceAdiposity {
     let impliedBodyFatPercent: Double
     /// Number of mesh points the read was computed over (478).
     let meshPointCount: Int
+    /// 0..1 expression neutrality from the 52 blendshape coefficients. A big
+    /// smile / open mouth / squint distorts facial fullness, so this gates how
+    /// much the facial read is trusted (1.0 = relaxed neutral face).
+    var expressionNeutrality: Double = 1.0
     /// 0..1 — higher = leaner / sharper facial definition.
     var leannessIndex: Double { max(0, min(1, 1 - adiposityIndex)) }
 }
@@ -279,10 +283,38 @@ actor MediaPipeService {
         // Map leanness → BF%: a razor-sharp face ≈ 7%, a very full face ≈ 36%.
         let impliedBF = 7 + adiposity * 29
 
+        // Expression neutrality from the 52 blendshape coefficients — a wide
+        // smile / open mouth / squint inflates apparent facial fullness, so we
+        // surface neutrality and let the caller down-weight the read when the
+        // face isn't relaxed.
+        var neutrality = 1.0
+        if let shapes = result.faceBlendshapes.first {
+            var scores: [String: Double] = [:]
+            for c in shapes.categories {
+                if let name = c.categoryName { scores[name] = Double(c.score) }
+            }
+            let distorting: [(String, Double)] = [
+                ("jawOpen", 1.0),
+                ("mouthSmileLeft", 0.8), ("mouthSmileRight", 0.8),
+                ("cheekPuff", 0.9),
+                ("mouthPucker", 0.6), ("mouthFunnel", 0.6),
+                ("eyeSquintLeft", 0.6), ("eyeSquintRight", 0.6)
+            ]
+            var weighted = 0.0, wsum = 0.0
+            for (name, w) in distorting {
+                if let s = scores[name] { weighted += s * w; wsum += w }
+            }
+            if wsum > 0 {
+                let activation = min(1, (weighted / wsum) * 2.2)
+                neutrality = max(0, 1 - activation)
+            }
+        }
+
         return MediaPipeFaceAdiposity(
             adiposityIndex: adiposity,
             impliedBodyFatPercent: impliedBF,
-            meshPointCount: pts.count
+            meshPointCount: pts.count,
+            expressionNeutrality: neutrality
         )
     }
 
